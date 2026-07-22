@@ -27,7 +27,7 @@ export function baseOptions(): BaseLayoutProps {
             <ArrowUpRight className="size-4" />
           </span>
         ),
-        url: 'https://luffy-canvas-site.netlify.app/',
+        url: 'https://luffy-canvas-site.vercel.app/',
         external: true,
         on: 'nav',
       },
