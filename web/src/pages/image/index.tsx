@@ -14,7 +14,7 @@ import { modelOptionLabel, resolveModelChannel, useConfigStore, useEffectiveConf
 import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
 import { formatBytes, formatDuration, getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
-import { requestEdit, requestGeneration } from "@/services/api/image";
+import { IMAGE_REQUEST_UNKNOWN_MESSAGE, ImageRequestUnknownError, requestEdit, requestGeneration } from "@/services/api/image";
 import { deleteStoredImages, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
@@ -29,11 +29,12 @@ type GeneratedImage = {
     height: number;
     bytes: number;
     mimeType?: string;
+    persistenceError?: string;
 };
 
 type GenerationResult = {
     id: string;
-    status: "pending" | "success" | "failed";
+    status: "pending" | "success" | "failed" | "unknown";
     image?: GeneratedImage;
     error?: string;
 };
@@ -50,10 +51,11 @@ type GenerationLog = {
     durationMs: number;
     successCount: number;
     failCount: number;
+    unknownCount: number;
     imageCount: number;
     size: string;
     quality: string;
-    status: "成功" | "失败";
+    status: "成功" | "失败" | "待确认";
     images: GeneratedImage[];
     thumbnails: string[];
 };
@@ -185,19 +187,14 @@ export default function ImagePage() {
         const result = await Promise.allSettled(tasks);
         const successImages = result.filter((item): item is PromiseFulfilledResult<GeneratedImage> => item.status === "fulfilled").map((item) => item.value);
         const successCount = successImages.length;
-        const failCount = generationCount - successCount;
+        const unknownCount = result.filter((item) => item.status === "rejected" && item.reason instanceof ImageRequestUnknownError).length;
+        const failCount = generationCount - successCount - unknownCount;
         const failed = result.find((item): item is PromiseRejectedResult => item.status === "rejected");
         const error = failed?.reason instanceof Error ? failed.reason.message : failCount ? "生成失败" : undefined;
-        if (agentTaskId) updateAgentTask(agentTaskId, { status: successCount ? "succeeded" : "failed", successCount, failCount, error: successCount ? undefined : error });
+        if (agentTaskId) updateAgentTask(agentTaskId, { status: successCount ? "succeeded" : "failed", successCount, failCount: failCount + unknownCount, error: successCount ? undefined : error });
 
         try {
-            const logImages = await Promise.all(
-                successImages.map(async (image) => {
-                    const stored = await uploadImage(image.dataUrl);
-                    return { ...image, dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType };
-                }),
-            );
-            saveLog(
+            await saveLog(
                 buildLog({
                     prompt: text,
                     model,
@@ -206,11 +203,14 @@ export default function ImagePage() {
                     durationMs: performance.now() - batchStartedAt,
                     successCount,
                     failCount,
-                    status: successCount ? "成功" : "失败",
-                    images: logImages,
+                    unknownCount,
+                    status: successCount ? "成功" : unknownCount ? "待确认" : "失败",
+                    images: successImages,
                 }),
             );
-            successCount ? message.success("图片已生成") : message.error(failed?.reason instanceof Error ? failed.reason.message : "生成失败");
+            if (unknownCount) message.warning(IMAGE_REQUEST_UNKNOWN_MESSAGE);
+            else if (successCount) message.success("图片已生成");
+            else message.error(failed?.reason instanceof Error ? failed.reason.message : "生成失败");
         } finally {
             setRunning(false);
         }
@@ -304,8 +304,13 @@ export default function ImagePage() {
         setDeleteConfirmOpen(false);
     };
 
-    const saveLog = (log: GenerationLog) => {
-        void logStore.setItem(log.id, serializeLog(log)).then(refreshLogs);
+    const saveLog = async (log: GenerationLog) => {
+        try {
+            await logStore.setItem(log.id, serializeLog(log));
+            await refreshLogs();
+        } catch {
+            message.warning("生成记录未能保存到本地，请及时下载结果");
+        }
     };
 
     const refreshLogs = async () => setLogs(await readStoredLogs());
@@ -319,7 +324,10 @@ export default function ImagePage() {
         if (log.config.quality) updateConfig("quality", log.config.quality);
         if (log.config.size) updateConfig("size", log.config.size);
         if (log.config.count) updateConfig("count", log.config.count);
-        setResults(log.images.map((image) => ({ id: image.id, status: "success", image })));
+        setResults([
+            ...log.images.map((image) => ({ id: image.id, status: "success" as const, image })),
+            ...Array.from({ length: log.unknownCount || 0 }, () => ({ id: nanoid(), status: "unknown" as const, error: IMAGE_REQUEST_UNKNOWN_MESSAGE })),
+        ]);
     };
 
     const buildRequestSnapshot = () => {
@@ -342,12 +350,18 @@ export default function ImagePage() {
             const result = snapshot.references.length ? await requestEdit(snapshot.config, snapshot.text, snapshot.references) : await requestGeneration(snapshot.config, snapshot.text);
             const image = result[0];
             if (!image) throw new Error("接口没有返回图片");
-            const meta = await readImageMeta(image.dataUrl);
-            const nextImage = { id: image.id, dataUrl: image.dataUrl, durationMs: performance.now() - itemStartedAt, width: meta.width, height: meta.height, bytes: getDataUrlByteSize(image.dataUrl) };
+            let nextImage: GeneratedImage;
+            try {
+                const stored = await uploadImage(image.dataUrl);
+                nextImage = { id: image.id, dataUrl: stored.url, storageKey: stored.storageKey, durationMs: performance.now() - itemStartedAt, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType };
+            } catch (error) {
+                const meta = await readImageMeta(image.dataUrl);
+                nextImage = { id: image.id, dataUrl: image.dataUrl, durationMs: performance.now() - itemStartedAt, width: meta.width, height: meta.height, bytes: getDataUrlByteSize(image.dataUrl), mimeType: meta.mimeType, persistenceError: error instanceof Error ? error.message : "图片未能保存到本地" };
+            }
             setResults((value) => updateResultAt(value, index, { status: "success", image: nextImage }));
             return nextImage;
         } catch (error) {
-            setResults((value) => updateResultAt(value, index, { status: "failed", error: error instanceof Error ? error.message : "生成失败" }));
+            setResults((value) => updateResultAt(value, index, { status: error instanceof ImageRequestUnknownError ? "unknown" : "failed", error: error instanceof Error ? error.message : "生成失败" }));
             throw error;
         }
     };
@@ -360,10 +374,7 @@ export default function ImagePage() {
         const retryStartedAt = performance.now();
         try {
             const image = await runGenerationSlot(index, snapshot);
-            const stored = await uploadImage(image.dataUrl);
-            const logImage = { ...image, dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType };
-            setResults((value) => updateResultAt(value, index, { image: { ...image, dataUrl: stored.url, storageKey: stored.storageKey } }));
-            saveLog(
+            await saveLog(
                 buildLog({
                     prompt: snapshot.text,
                     model,
@@ -372,8 +383,9 @@ export default function ImagePage() {
                     durationMs: performance.now() - retryStartedAt,
                     successCount: 1,
                     failCount: 0,
+                    unknownCount: 0,
                     status: "成功",
-                    images: [logImage],
+                    images: [image],
                 }),
             );
             message.success("重试成功");
@@ -503,6 +515,8 @@ export default function ImagePage() {
                                 {results.map((result, index) =>
                                     result.status === "success" && result.image ? (
                                         <ResultImageCard key={result.id} image={result.image} index={index} onEdit={addResultToReferences} onDownload={downloadImage} onSaveAsset={saveResultToAssets} />
+                                    ) : result.status === "unknown" ? (
+                                        <UnknownImageCard key={result.id} error={result.error || IMAGE_REQUEST_UNKNOWN_MESSAGE} />
                                     ) : result.status === "failed" ? (
                                         <FailedImageCard key={result.id} error={result.error || "生成失败"} onRetry={() => retryResult(index)} />
                                     ) : (
@@ -595,6 +609,7 @@ function ResultImageCard({
                     <span>{formatBytes(image.bytes)}</span>
                     <span>{formatDuration(image.durationMs)}</span>
                 </div>
+                {image.persistenceError ? <div className="text-xs text-amber-700 dark:text-amber-300">未能保存到本地，请及时下载图片。</div> : null}
                 <div className="grid min-w-0 grid-cols-3 gap-2">
                     <Tooltip title="添加到资产">
                         <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => void onSaveAsset(image, index)}>
@@ -648,6 +663,19 @@ function FailedImageCard({ error, onRetry }: { error: string; onRetry: () => voi
                 <Button size="small" danger onClick={onRetry}>
                     重试
                 </Button>
+            </div>
+        </div>
+    );
+}
+
+function UnknownImageCard({ error }: { error: string }) {
+    return (
+        <div className="overflow-hidden rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-950 dark:bg-amber-950/20">
+            <div className="flex aspect-square flex-col items-center justify-center gap-3 p-5 text-center">
+                <div className="text-sm font-medium text-amber-700 dark:text-amber-300">结果待确认</div>
+                <Typography.Paragraph ellipsis={{ rows: 4 }} className="!mb-0 !text-xs !text-amber-700 dark:!text-amber-200">
+                    {error}
+                </Typography.Paragraph>
             </div>
         </div>
     );
@@ -746,6 +774,11 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
                                 失败 {log.failCount}
                             </Tag>
                         ) : null}
+                        {log.unknownCount ? (
+                            <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="orange">
+                                待确认 {log.unknownCount}
+                            </Tag>
+                        ) : null}
                     </div>
                     <div className="flex flex-wrap justify-end gap-1">
                         <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{log.imageCount} 张</Tag>
@@ -802,10 +835,11 @@ async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog>
         durationMs: log.durationMs || 0,
         successCount: log.successCount ?? log.imageCount ?? 0,
         failCount: log.failCount || 0,
+        unknownCount: log.unknownCount || 0,
         imageCount: log.imageCount || log.successCount || 0,
         size: log.size || config.size || "",
         quality: log.quality || config.quality || "",
-        status: log.status || "成功",
+        status: log.status || (log.unknownCount ? "待确认" : "成功"),
         images,
         thumbnails: images.map((image) => image.dataUrl).filter(Boolean),
     };
@@ -856,6 +890,7 @@ function buildLog({
     durationMs,
     successCount,
     failCount,
+    unknownCount,
     status,
     images,
 }: {
@@ -866,6 +901,7 @@ function buildLog({
     durationMs: number;
     successCount: number;
     failCount: number;
+    unknownCount: number;
     status: GenerationLog["status"];
     images: GeneratedImage[];
 }): GenerationLog {
@@ -888,6 +924,7 @@ function buildLog({
         durationMs,
         successCount,
         failCount,
+        unknownCount,
         imageCount: Number(logConfig.count) || successCount,
         size: logConfig.size,
         quality: logConfig.quality,

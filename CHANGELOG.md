@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [修复] 生图请求未返回可读取响应时，工作台与画布会标记为待确认并禁用直接重试，避免服务端已消费后重复扣费；已生成但本地保存失败的图片仍可下载。
++ [修复] 生图工作台会先将结果持久化到本地，并在清理无引用图片时保留生成记录，避免临时链接失效或删除画布后历史图片无法再次打开。
 + [调整] 项目品牌与公开仓库入口更新为 luffy-canvas-site，网页增加上游 infinite-canvas 致谢，并新增 Netlify 部署配置。
 + [新增] AI 渠道新增 OpenAI、New API、OpenAI 兼容、Gemini、Qwen/百炼与完全自定义预设，支持连接测试和无需鉴权的本地服务。
 + [新增] 原生支持 OpenAI Sora / New API、Gemini Veo、Wan 异步视频，以及 Qwen-Image 生图/改图，并保留 Seedance 与第三方中转站调用。

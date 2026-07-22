@@ -46,6 +46,7 @@ const STATUS_COLOR: Record<string, string> = {
     success: "#22c55e",
     loading: "#f59e0b",
     error: "#ef4444",
+    unknown: "#f59e0b",
     idle: "transparent",
 };
 

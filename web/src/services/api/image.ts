@@ -102,6 +102,15 @@ type GeminiPayload = {
 type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; error?: string };
 type RequestOptions = { signal?: AbortSignal };
 
+export const IMAGE_REQUEST_UNKNOWN_MESSAGE = "请求没有返回可读取的响应，无法确认是否已生成。服务端可能已执行并产生费用，请先到渠道日志核对，暂勿直接重试。";
+
+export class ImageRequestUnknownError extends Error {
+    constructor() {
+        super(IMAGE_REQUEST_UNKNOWN_MESSAGE);
+        this.name = "ImageRequestUnknownError";
+    }
+}
+
 const QUALITY_BASE: Record<string, number> = {
     low: 1024,
     medium: 2048,
@@ -336,7 +345,7 @@ function resolveGeminiImageSize(quality: string, dimensions: { width: number; he
 
 function resolveImageDataUrl(item: Record<string, unknown>) {
     if (typeof item.b64_json === "string" && item.b64_json) {
-        return `data:image/png;base64,${item.b64_json}`;
+        return item.b64_json.startsWith("data:") ? item.b64_json : `data:image/png;base64,${item.b64_json}`;
     }
     if (typeof item.url === "string" && item.url) {
         return item.url;
@@ -371,6 +380,12 @@ function readAxiosError(error: unknown, fallback: string) {
     if (error instanceof DOMException && error.name === "AbortError") return "请求已取消";
     if (error instanceof TypeError && /fetch|network|load failed/i.test(error.message)) return "无法连接接口，请检查 Base URL、网络连接，以及服务是否允许浏览器跨域（CORS）请求";
     return error instanceof Error ? error.message : fallback;
+}
+
+function readImageGenerationError(error: unknown, fallback: string) {
+    if (axios.isCancel(error) || (error instanceof DOMException && error.name === "AbortError")) return new Error("请求已取消");
+    if ((axios.isAxiosError(error) && !error.response) || (error instanceof TypeError && /fetch|network|load failed/i.test(error.message))) return new ImageRequestUnknownError();
+    return new Error(readAxiosError(error, fallback));
 }
 
 function readStatusError(status: number | undefined, fallback: string) {
@@ -832,14 +847,14 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
             });
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
-            throw new Error(readAxiosError(error, "请求失败"));
+            throw readImageGenerationError(error, "请求失败");
         }
     }
     if (requestConfig.apiFormat === "gemini") {
         try {
             return await requestGeminiImages(requestConfig, prompt, [], n, options);
         } catch (error) {
-            throw new Error(readAxiosError(error, "请求失败"));
+            throw readImageGenerationError(error, "请求失败");
         }
     }
     if (requestConfig.apiFormat === "qwen") {
@@ -848,7 +863,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
         try {
             return await requestQwenImages(requestConfig, prompt, [], n, requestSize, options);
         } catch (error) {
-            throw new Error(readAxiosError(error, "请求失败"));
+            throw readImageGenerationError(error, "请求失败");
         }
     }
     const quality = normalizeQuality(config.quality);
@@ -875,7 +890,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
         const images = parseImagePayload(response.data);
         return images;
     } catch (error) {
-        throw new Error(readAxiosError(error, "请求失败"));
+        throw readImageGenerationError(error, "请求失败");
     }
 }
 
@@ -904,7 +919,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
             });
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
-            throw new Error(readAxiosError(error, "请求失败"));
+            throw readImageGenerationError(error, "请求失败");
         }
     }
     if (requestConfig.apiFormat === "gemini") {
@@ -912,7 +927,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         try {
             return await requestGeminiImages(requestConfig, requestPrompt, references, n, options);
         } catch (error) {
-            throw new Error(readAxiosError(error, "请求失败"));
+            throw readImageGenerationError(error, "请求失败");
         }
     }
     if (requestConfig.apiFormat === "qwen") {
@@ -922,7 +937,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         try {
             return await requestQwenImages(requestConfig, requestPrompt, references, n, requestSize, options);
         } catch (error) {
-            throw new Error(readAxiosError(error, "请求失败"));
+            throw readImageGenerationError(error, "请求失败");
         }
     }
     const quality = normalizeQuality(config.quality);
@@ -952,7 +967,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         const images = parseImagePayload(response.data);
         return images;
     } catch (error) {
-        throw new Error(readAxiosError(error, "请求失败"));
+        throw readImageGenerationError(error, "请求失败");
     }
 }
 
