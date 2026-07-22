@@ -265,7 +265,7 @@ export function CanvasNodeInfoModal({ node, open, onClose }: { node: CanvasNodeD
                             {node.metadata?.prompt ? <InfoRow label="提示词" value={node.metadata.prompt} /> : null}
                             {imageBytes ? <InfoRow label="图片大小" value={formatBytes(imageBytes)} /> : null}
                             {node.metadata?.errorDetails ? (
-                                <div className="rounded-lg border p-3 text-red-400" style={{ borderColor: theme.node.stroke }}>
+                                <div className={`rounded-lg border p-3 ${node.metadata?.status === "unknown" ? "text-amber-500" : "text-red-400"}`} style={{ borderColor: theme.node.stroke }}>
                                     {node.metadata.errorDetails}
                                 </div>
                             ) : null}

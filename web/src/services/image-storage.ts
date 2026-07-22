@@ -13,10 +13,19 @@ export type UploadedImage = {
 };
 
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
+const imageLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
 const objectUrls = new Map<string, string>();
 
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    let blob: Blob;
+    if (typeof input === "string") {
+        const response = await fetch(input);
+        if (!response.ok) throw new Error(`读取图片失败（${response.status}）`);
+        blob = await response.blob();
+    } else {
+        blob = input;
+    }
+    if (blob.type && !blob.type.startsWith("image/") && blob.type !== "application/octet-stream") throw new Error("读取图片失败：返回内容不是图片");
     const storageKey = `image:${nanoid()}`;
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
@@ -66,6 +75,9 @@ export async function deleteStoredImages(keys: Iterable<string>) {
 
 export async function cleanupUnusedImages(usedData: unknown) {
     const usedKeys = collectImageStorageKeys(usedData);
+    await imageLogStore.iterate((log) => {
+        collectImageStorageKeys(log, usedKeys);
+    });
     const unused: string[] = [];
     await store.iterate((_value, key) => {
         if (!usedKeys.has(key)) unused.push(key);

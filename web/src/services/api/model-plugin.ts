@@ -221,7 +221,7 @@ if (images.length === 0) {
     headers: { "Content-Type": "application/json", ...(authType === "none" ? {} : { Authorization: \`Bearer \${apiKey}\` }) },
     data: { model, prompt, n: params.count, size: params.size, response_format: "b64_json" },
   });
-  return (data.data || []).map((item) => item.b64_json ? \`data:image/png;base64,\${item.b64_json}\` : item.url);
+  return (data.data || []).map((item) => !item.b64_json ? item.url : item.b64_json.startsWith("data:") ? item.b64_json : \`data:image/png;base64,\${item.b64_json}\`);
 }
 
 // 图生图：/images/edits（multipart/form-data，参考图作为文件上传）
@@ -240,7 +240,7 @@ const edited = await request({
   headers: authType === "none" ? {} : { Authorization: \`Bearer \${apiKey}\` }, // 不要手动设 Content-Type，交给浏览器带 boundary
   data: form,
 });
-return (edited.data || []).map((item) => item.b64_json ? \`data:image/png;base64,\${item.b64_json}\` : item.url);`,
+return (edited.data || []).map((item) => !item.b64_json ? item.url : item.b64_json.startsWith("data:") ? item.b64_json : \`data:image/png;base64,\${item.b64_json}\`);`,
         },
         {
             label: "Gemini 规范",
@@ -387,7 +387,7 @@ export function normalizePluginImages(result: unknown): string[] {
                 const record = item as Record<string, unknown>;
                 if (typeof record.dataUrl === "string") return record.dataUrl;
                 if (typeof record.url === "string") return record.url;
-                if (typeof record.b64_json === "string") return `data:image/png;base64,${record.b64_json}`;
+                if (typeof record.b64_json === "string") return record.b64_json.startsWith("data:") ? record.b64_json : `data:image/png;base64,${record.b64_json}`;
             }
             return "";
         })

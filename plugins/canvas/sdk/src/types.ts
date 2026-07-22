@@ -20,7 +20,7 @@ export type ViewportTransform = { x: number; y: number; k: number };
 export type CanvasBuiltinNodeType = "image" | "text" | "config" | "video" | "audio" | "group";
 export type CanvasNodeTypeId = CanvasBuiltinNodeType | (string & {});
 
-export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
+export type CanvasNodeStatus = "idle" | "success" | "loading" | "error" | "unknown";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
 

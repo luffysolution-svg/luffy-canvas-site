@@ -6,6 +6,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
+import { IMAGE_REQUEST_UNKNOWN_MESSAGE } from "@/services/api/image";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { CanvasNodeType, type CanvasNodeData, type Position } from "@/types/canvas";
@@ -432,6 +433,7 @@ export const CanvasNode = React.memo(function CanvasNode({
 });
 
 function NodeContent(props: NodeContentRendererProps) {
+    if (props.node.metadata?.status === "unknown") return <UnknownContent theme={props.theme} />;
     if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent theme={props.theme} />;
@@ -501,6 +503,17 @@ function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "
                 <RefreshCw className="size-3.5" />
                 重试
             </button>
+        </div>
+    );
+}
+
+function UnknownContent({ theme }: Pick<NodeContentRendererProps, "theme">) {
+    return (
+        <div className="flex max-w-[260px] flex-col items-center gap-3 px-5 text-center">
+            <div className="text-sm font-medium text-amber-700 dark:text-amber-300">结果待确认</div>
+            <div className="text-xs leading-5" style={{ color: theme.node.muted }}>
+                {IMAGE_REQUEST_UNKNOWN_MESSAGE}
+            </div>
         </div>
     );
 }
