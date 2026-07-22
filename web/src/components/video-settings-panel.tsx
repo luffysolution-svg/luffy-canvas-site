@@ -2,9 +2,11 @@ import { type ReactNode } from "react";
 import { Switch } from "antd";
 
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
+import { geminiVideoCapabilities, geminiVideoDurationOptions, geminiVideoRatioOptions, normalizeGeminiVideoDuration, normalizeGeminiVideoRatio, normalizeGeminiVideoResolution, normalizeQwenVideoDuration, normalizeQwenVideoRatio, normalizeQwenVideoResolution, qwenVideoDurationOptions, qwenVideoRatioOptionsForModel, qwenVideoResolutionOptionsForModel } from "@/lib/native-video";
+import { isOfficialOpenAIVideoModel, normalizeOpenAIVideoDuration, normalizeOpenAIVideoSize, openAIVideoDurationOptions, openAIVideoSizeOptionsForModel } from "@/lib/openai-video";
 import { boolConfig, isSeedanceFastModel, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceDurationOptions, seedancePixelLabel, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
 import { type CanvasTheme } from "@/lib/canvas-theme";
-import { modelOptionName, type AiConfig } from "@/stores/use-config-store";
+import { modelOptionName, resolveModelChannel, type AiConfig } from "@/stores/use-config-store";
 
 const resolutionOptions = [
     { value: "720", label: "720p" },
@@ -26,17 +28,77 @@ export const videoResolutionOptions = resolutionOptions.map((item) => ({ value: 
 export const videoSizeOptions = sizeOptions.map((item) => ({ value: item.value, label: item.label }));
 export const videoSecondOptions = secondOptions.map((value) => String(value));
 
+export function getVideoSettingOptions(config: AiConfig, selectedModel: string, hasVideoReference = false, referenceImageCount = 0) {
+    const model = modelOptionName(selectedModel);
+    if (isSeedanceVideoConfig({ ...config, model: selectedModel })) {
+        return {
+            current: { size: normalizeSeedanceRatio(config.size), seconds: String(normalizeSeedanceDuration(config.videoSeconds)), resolution: normalizeSeedanceResolution(config.vquality, model) },
+            sizeOptions: seedanceRatioOptions.map(({ value, label }) => ({ value, label })),
+            secondsOptions: seedanceDurationOptions.map(String),
+            resolutionOptions: seedanceResolutionOptions.filter((item) => !(isSeedanceFastModel(model) && item.value === "1080p")).map(({ value, label }) => ({ value, label })),
+        };
+    }
+    const channel = resolveModelChannel(config, selectedModel);
+    if (isOfficialOpenAIVideoModel(channel.provider, model)) {
+        return {
+            current: { size: normalizeOpenAIVideoSize(config.size, model), seconds: normalizeOpenAIVideoDuration(config.videoSeconds), resolution: "" },
+            sizeOptions: openAIVideoSizeOptionsForModel(model).map(({ value, label }) => ({ value, label })),
+            secondsOptions: [...openAIVideoDurationOptions],
+            resolutionOptions: [],
+        };
+    }
+    if (channel.apiFormat === "gemini") {
+        const capabilities = geminiVideoCapabilities(model);
+        const resolution = hasVideoReference ? "720" : normalizeGeminiVideoResolution(config.vquality, model);
+        const constrained = resolution !== "720" || hasVideoReference || referenceImageCount > 1;
+        return {
+            current: { size: hasVideoReference ? "auto" : normalizeGeminiVideoRatio(config.size, model, resolution), seconds: normalizeGeminiVideoDuration(config.videoSeconds, model, constrained), resolution },
+            sizeOptions: hasVideoReference ? [] : (capabilities.landscapeOnly ? geminiVideoRatioOptions.slice(0, 1) : geminiVideoRatioOptions).map(({ value, label }) => ({ value, label })),
+            secondsOptions: constrained ? ["8"] : geminiVideoDurationOptions(model),
+            resolutionOptions: (hasVideoReference ? capabilities.resolutionOptions.filter((item) => item.value === "720") : capabilities.resolutionOptions).map(({ value, label }) => ({ value, label })),
+        };
+    }
+    if (channel.apiFormat === "qwen") {
+        const resolution = normalizeQwenVideoResolution(config.vquality, model, channel.baseUrl);
+        const i2v = model.toLowerCase().includes("i2v") || model.toLowerCase().includes("image-to-video");
+        return {
+            current: { size: i2v ? "auto" : normalizeQwenVideoRatio(config.size, model, resolution, channel.baseUrl), seconds: normalizeQwenVideoDuration(config.videoSeconds, model, hasVideoReference), resolution },
+            sizeOptions: i2v ? [] : qwenVideoRatioOptionsForModel(model, resolution, channel.baseUrl).map(({ value, label }) => ({ value, label })),
+            secondsOptions: qwenVideoDurationOptions(model, hasVideoReference),
+            resolutionOptions: qwenVideoResolutionOptionsForModel(model, channel.baseUrl).map(({ value, label }) => ({ value, label })),
+        };
+    }
+    return {
+        current: { size: normalizeVideoSizeValue(config.size), seconds: normalizeGenericVideoSeconds(config.videoSeconds), resolution: normalizeVideoResolutionValue(config.vquality) },
+        sizeOptions: videoSizeOptions,
+        secondsOptions: videoSecondOptions,
+        resolutionOptions: videoResolutionOptions,
+    };
+}
+
 type VideoSettingsPanelProps = {
     config: AiConfig;
-    onConfigChange: (key: "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark", value: string) => void;
+    onConfigChange: (key: "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "videoReferenceMode", value: string) => void;
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
+    hasVideoReference?: boolean;
+    referenceImageCount?: number;
 };
 
-export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5" }: VideoSettingsPanelProps) {
+export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", hasVideoReference = false, referenceImageCount = 0 }: VideoSettingsPanelProps) {
     if (isSeedanceVideoConfig(config)) {
         return <SeedanceVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+    }
+
+    const channel = resolveModelChannel(config, config.model || config.videoModel);
+    if (isOfficialOpenAIVideoModel(channel.provider, modelOptionName(config.model || config.videoModel))) {
+        return <OpenAIVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+    }
+
+    const apiFormat = channel.apiFormat;
+    if (apiFormat === "gemini" || apiFormat === "qwen") {
+        return <ProtocolVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} apiFormat={apiFormat} hasVideoReference={hasVideoReference} referenceImageCount={referenceImageCount} />;
     }
 
     const seconds = config.videoSeconds || "6";
@@ -99,6 +161,135 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         <NumberInput value={seconds} min={1} max={20} theme={theme} onChange={(value) => onConfigChange("videoSeconds", value)} />
                     </div>
                 </SettingGroup>
+            </div>
+        </ImageSettingsTheme>
+    );
+}
+
+function OpenAIVideoSettingsPanel({ config, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps) {
+    const model = modelOptionName(config.model || config.videoModel);
+    const sizes = openAIVideoSizeOptionsForModel(model);
+    const size = normalizeOpenAIVideoSize(config.size, model);
+    const seconds = normalizeOpenAIVideoDuration(config.videoSeconds);
+
+    return (
+        <ImageSettingsTheme theme={theme}>
+            <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
+                {showTitle ? <div className="text-lg font-semibold">视频设置</div> : null}
+                <SettingGroup title="尺寸" color={theme.node.muted}>
+                    <div className="grid grid-cols-2 gap-2.5">
+                        {sizes.map((item) => (
+                            <button
+                                key={item.value}
+                                type="button"
+                                className="flex h-[74px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border bg-transparent text-sm transition hover:opacity-80"
+                                style={{ borderColor: size === item.value ? theme.node.text : theme.node.stroke, color: theme.node.text }}
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={() => onConfigChange("size", item.value)}
+                            >
+                                <SizePreview width={item.width} height={item.height} color={theme.node.text} />
+                                <span>{item.label}</span>
+                                <span className="text-[10px] leading-none opacity-55">{item.value}</span>
+                            </button>
+                        ))}
+                    </div>
+                </SettingGroup>
+                <SettingGroup title="时长" color={theme.node.muted}>
+                    <div className="grid grid-cols-3 gap-2.5">
+                        {openAIVideoDurationOptions.map((value) => (
+                            <OptionPill key={value} selected={seconds === value} theme={theme} onClick={() => onConfigChange("videoSeconds", value)}>
+                                {value}s
+                            </OptionPill>
+                        ))}
+                    </div>
+                </SettingGroup>
+                <div className="text-[11px] leading-5 opacity-55">OpenAI Sora 官方接口支持 1 张参考图；提交时会按所选尺寸居中裁切，分辨率由尺寸直接决定。</div>
+            </div>
+        </ImageSettingsTheme>
+    );
+}
+
+function ProtocolVideoSettingsPanel({ config, onConfigChange, theme, showTitle, className, apiFormat, hasVideoReference = false, referenceImageCount = 0 }: VideoSettingsPanelProps & { apiFormat: "gemini" | "qwen" }) {
+    const gemini = apiFormat === "gemini";
+    const channel = resolveModelChannel(config, config.model || config.videoModel);
+    const qwenModel = !gemini ? modelOptionName(config.model || config.videoModel).toLowerCase() : "";
+    const qwen27 = qwenModel.includes("2.7");
+    const qwenR2v = qwenModel.includes("r2v") || qwenModel.includes("reference-to-video");
+    const qwenI2v = qwenModel.includes("i2v") || qwenModel.includes("image-to-video");
+    const qwenSupportsGeneratedAudio = !gemini && qwenModel.includes("2.6") && qwenModel.includes("flash") && (qwenR2v || qwenI2v);
+    const model = modelOptionName(config.model || config.videoModel);
+    const geminiCapabilities = gemini ? geminiVideoCapabilities(model) : null;
+    const qwenResolution = !gemini ? normalizeQwenVideoResolution(config.vquality, model, channel.baseUrl) : "";
+    const resolutions = gemini ? (hasVideoReference ? geminiCapabilities!.resolutionOptions.filter((item) => item.value === "720") : geminiCapabilities!.resolutionOptions) : qwenVideoResolutionOptionsForModel(model, channel.baseUrl);
+    const ratios = gemini ? (geminiCapabilities!.landscapeOnly ? geminiVideoRatioOptions.slice(0, 1) : geminiVideoRatioOptions) : qwenVideoRatioOptionsForModel(model, qwenResolution, channel.baseUrl);
+    const resolution = gemini ? (hasVideoReference ? "720" : normalizeGeminiVideoResolution(config.vquality, model)) : normalizeQwenVideoResolution(config.vquality, model, channel.baseUrl);
+    const ratio = gemini ? normalizeGeminiVideoRatio(config.size, model, resolution) : normalizeQwenVideoRatio(config.size, model, resolution, channel.baseUrl);
+    const geminiConstrained = resolution !== "720" || hasVideoReference || referenceImageCount > 1;
+    const durations = gemini ? (geminiConstrained ? ["8"] : geminiVideoDurationOptions(model)) : qwenVideoDurationOptions(model, hasVideoReference);
+    const seconds = gemini ? normalizeGeminiVideoDuration(config.videoSeconds, model, geminiConstrained) : normalizeQwenVideoDuration(config.videoSeconds, model, hasVideoReference);
+    const geminiReferenceMode = geminiCapabilities?.supportsInterpolation && config.videoReferenceMode === "interpolation" ? "interpolation" : "reference";
+    const generateAudio = boolConfig(config.videoGenerateAudio, true);
+    const watermark = boolConfig(config.videoWatermark, false);
+
+    return (
+        <ImageSettingsTheme theme={theme}>
+            <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
+                {showTitle ? <div className="text-lg font-semibold">视频设置</div> : null}
+                {gemini ? (
+                    <SettingGroup title="图像控制" color={theme.node.muted}>
+                        <div className={`grid gap-2.5 ${geminiCapabilities!.supportsInterpolation ? "grid-cols-2" : "grid-cols-1"}`}>
+                            <OptionPill selected={geminiReferenceMode === "reference"} theme={theme} onClick={() => onConfigChange("videoReferenceMode", "reference")}>首帧 / 素材</OptionPill>
+                            {geminiCapabilities!.supportsInterpolation ? <OptionPill selected={geminiReferenceMode === "interpolation"} theme={theme} onClick={() => onConfigChange("videoReferenceMode", "interpolation")}>首尾帧</OptionPill> : null}
+                        </div>
+                        <div className="text-[11px] leading-5 opacity-55">{geminiCapabilities!.supportsInterpolation ? "首尾帧模式必须按顺序提供 2 张图；素材模式的多参考图仅适用于 Veo 3.1 / 3.1 Fast。" : "当前模型仅支持首帧输入；首尾帧模式仅适用于 Veo 3.1 系列。"}</div>
+                    </SettingGroup>
+                ) : null}
+                <SettingGroup title="清晰度" color={theme.node.muted}>
+                    <div className="grid grid-cols-3 gap-2.5">
+                        {resolutions.map((item) => (
+                            <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
+                                {item.label}
+                            </OptionPill>
+                        ))}
+                    </div>
+                </SettingGroup>
+                {qwenI2v || (gemini && hasVideoReference) ? <div className="text-[11px] leading-5 opacity-55">{qwenI2v ? "Wan I2V 的输出比例由首帧或续写视频决定。" : "Veo 视频续写继承原视频比例，并固定使用 720p。"}</div> : <SettingGroup title="比例" color={theme.node.muted}>
+                    <div className={`grid gap-2.5 ${gemini ? "grid-cols-2" : "grid-cols-3"}`}>
+                        {ratios.map((item) => (
+                            <button
+                                key={item.value}
+                                type="button"
+                                className="flex h-[68px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border bg-transparent px-1 text-sm transition hover:opacity-80"
+                                style={{ borderColor: ratio === item.value ? theme.node.text : theme.node.stroke, color: theme.node.text }}
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={() => onConfigChange("size", item.value)}
+                            >
+                                <SizePreview width={ratioPreview(item.value).width} height={ratioPreview(item.value).height} color={theme.node.text} />
+                                <span>{item.label}</span>
+                                <span className="text-[10px] leading-none opacity-55">{item.value}</span>
+                            </button>
+                        ))}
+                    </div>
+                </SettingGroup>}
+                <SettingGroup title="时长" color={theme.node.muted}>
+                    <div className={`grid gap-2.5 ${gemini || qwenR2v ? "grid-cols-3" : "grid-cols-4"}`}>
+                        {durations.map((value) => (
+                            <OptionPill key={value} selected={seconds === String(value)} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>
+                                {value}s
+                            </OptionPill>
+                        ))}
+                        {gemini ? null : <NumberInput value={seconds} min={2} max={qwenR2v && (hasVideoReference || !qwen27) ? 10 : 15} theme={theme} onChange={(value) => onConfigChange("videoSeconds", value)} />}
+                    </div>
+                </SettingGroup>
+                {gemini ? null : (
+                    <SettingGroup title="输出" color={theme.node.muted}>
+                        <div className="grid gap-2 rounded-xl border p-2.5" style={{ borderColor: theme.node.stroke }}>
+                            {qwenSupportsGeneratedAudio ? <SwitchRow label="生成声音" checked={generateAudio} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} /> : null}
+                            <SwitchRow label="添加水印" checked={watermark} theme={theme} onChange={(checked) => onConfigChange("videoWatermark", String(checked))} />
+                        </div>
+                    </SettingGroup>
+                )}
+                {gemini ? <div className="text-[11px] leading-5 opacity-55">Veo 视频续写仅接受近 2 天由 Veo 生成的视频；本地会检查格式，来源与有效期由 Google API 校验。</div> : null}
             </div>
         </ImageSettingsTheme>
     );
@@ -169,7 +360,8 @@ function SeedanceVideoSettingsPanel({ config, onConfigChange, theme, showTitle, 
 }
 
 export function videoResolutionLabel(value: string) {
-    return `${normalizeVideoResolutionValue(value)}p`;
+    const resolution = normalizeVideoResolutionValue(value);
+    return resolution.toLowerCase() === "4k" ? "4K" : `${resolution}p`;
 }
 
 export function videoSizeLabel(value: string) {
@@ -195,6 +387,11 @@ export function normalizeVideoResolutionValue(value: string) {
     if (value === "480p" || value === "low") return "480";
     if (value === "720p" || value === "auto" || value === "high" || value === "medium") return "720";
     return value.replace(/p$/i, "") || "720";
+}
+
+function normalizeGenericVideoSeconds(value: string) {
+    const seconds = Math.floor(Number(value) || 6);
+    return String(Math.max(1, Math.min(20, seconds)));
 }
 
 function OptionPill({ selected, disabled = false, theme, onClick, children }: { selected: boolean; disabled?: boolean; theme: CanvasTheme; onClick: () => void; children: ReactNode }) {

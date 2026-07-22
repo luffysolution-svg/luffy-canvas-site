@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 
 import { fetchPrompts, type Prompt } from "@/services/api/prompts";
 import { navigationTools } from "@/constant/navigation-tools";
+import { PROJECT_REPOSITORY_URL, UPSTREAM_REPOSITORY_URL } from "@/constant/env";
 import { cn } from "@/lib/utils";
 
 function Highlighter({ action, color, children }: { action: "highlight" | "underline"; color: string; children: ReactNode }) {
@@ -41,11 +42,11 @@ export default function IndexPage() {
                 <div className="pointer-events-none absolute right-[23%] top-[48%] size-20 rounded-full border border-dashed border-stone-200 dark:border-stone-800" />
 
                 <div className="relative flex min-h-[620px] flex-col items-center justify-center pt-10 text-center">
-                    <h1 className="ai-title-aurora max-w-5xl text-balance text-5xl font-semibold tracking-normal sm:text-7xl lg:text-8xl">无限画布</h1>
+                    <h1 className="ai-title-aurora max-w-5xl text-balance text-5xl font-semibold tracking-normal sm:text-7xl lg:text-8xl">luffy-canvas-site</h1>
                     <p className="mt-8 max-w-3xl text-balance text-lg leading-8 text-stone-500 dark:text-stone-400">
                         在
                         <Highlighter action="underline" color="#FF9800">
-                            无限画布
+                            luffy-canvas-site
                         </Highlighter>
                         中生成、连接和重组
                         <Highlighter action="highlight" color="#87CEFA">
@@ -106,6 +107,18 @@ export default function IndexPage() {
                     </div>
                 </section>
             </section>
+            <footer className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-3 border-t border-stone-200 px-6 py-5 text-xs text-stone-500 dark:border-stone-800 dark:text-stone-400">
+                <a href={PROJECT_REPOSITORY_URL} target="_blank" rel="noopener noreferrer" className="font-medium text-stone-700 transition hover:text-stone-950 dark:text-stone-300 dark:hover:text-white">
+                    luffy-canvas-site
+                </a>
+                <span>
+                    基于{" "}
+                    <a href={UPSTREAM_REPOSITORY_URL} target="_blank" rel="noopener noreferrer" className="underline decoration-stone-300 underline-offset-4 transition hover:text-stone-800 dark:decoration-stone-700 dark:hover:text-stone-200">
+                        basketikun/infinite-canvas
+                    </a>{" "}
+                    二次开发，感谢原作者的开源贡献 · AGPL-3.0
+                </span>
+            </footer>
             <Image.PreviewGroup
                 preview={{
                     open: previewOpen,

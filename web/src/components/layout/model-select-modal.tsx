@@ -59,8 +59,8 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
 
     const fetchModels = async () => {
         if (!channel) return;
-        if (!channel.baseUrl.trim() || !channel.apiKey.trim()) {
-            message.error("请先填写接口地址和 API Key");
+        if (!channel.baseUrl.trim() || (channel.authType !== "none" && !channel.apiKey.trim())) {
+            message.error(channel.authType === "none" ? "请先填写接口地址" : "请先填写接口地址和 API Key");
             return;
         }
         setLoading(true);

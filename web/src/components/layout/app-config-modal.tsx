@@ -1,4 +1,4 @@
-import { App, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
+import { App, Button, Dropdown, Form, Input, Modal, Progress, Select, Tabs } from "antd";
 import { Cloud, Pencil, Plus, RefreshCw, Trash2, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -8,7 +8,7 @@ import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
-import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { channelProviderLabel, channelProviderPresets, createModelChannelFromPreset, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ChannelProvider, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -50,7 +50,7 @@ function createWebdavDomainProgress(): Record<AppSyncDomainKey, WebdavDomainProg
 }
 
 export function AppConfigPanel({ showDoneButton = false, initialTab = "channels" }: { showDoneButton?: boolean; initialTab?: ConfigTabKey }) {
-    const { message } = App.useApp();
+    const { message, modal } = App.useApp();
     const [activeTab, setActiveTab] = useState<ConfigTabKey>(initialTab);
     const [editingChannelId, setEditingChannelId] = useState("");
     const [testingWebdav, setTestingWebdav] = useState(false);
@@ -73,7 +73,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     };
 
     const finishConfig = () => {
-        const ready = config.channels.some((channel) => channel.baseUrl.trim() && channel.apiKey.trim() && channel.models.length);
+        const ready = config.channels.some((channel) => channel.baseUrl.trim() && (channel.authType === "none" || channel.apiKey.trim()) && channel.models.length);
         setConfigDialogOpen(false);
         if (!ready) return;
         message.success(shouldPromptContinue ? "配置已保存，请继续刚才的请求" : "配置已保存");
@@ -82,8 +82,8 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
 
     const updateChannels = (channels: ModelChannel[]) => saveConfig(withChannels(config, channels));
 
-    const addChannel = () => {
-        const channel = createModelChannel({ name: `渠道 ${config.channels.length + 1}` });
+    const addChannel = (provider: ChannelProvider) => {
+        const channel = createModelChannelFromPreset(provider, { name: `${channelProviderLabel(provider)} ${config.channels.length + 1}` });
         updateChannels([...config.channels, channel]);
         setEditingChannelId(channel.id);
     };
@@ -93,7 +93,15 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
             message.warning("至少保留一个渠道");
             return;
         }
-        updateChannels(config.channels.filter((channel) => channel.id !== id));
+        const channel = config.channels.find((item) => item.id === id);
+        modal.confirm({
+            title: `删除渠道「${channel?.name || "未命名渠道"}」？`,
+            content: "画布中引用该渠道的模型不会自动改用其他渠道；全局默认模型会从剩余渠道重新选择。",
+            okText: "删除",
+            okButtonProps: { danger: true },
+            cancelText: "取消",
+            onOk: () => updateChannels(config.channels.filter((item) => item.id !== id)),
+        });
     };
 
     const saveChannel = (channel: ModelChannel) => {
@@ -164,9 +172,17 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                             <div>
                                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                                     <div className="text-xs text-stone-500">每个渠道选择一个协议并拉取模型，为每个模型指定能力（生图/视频/文本/音频），并可自定义调用脚本。</div>
-                                    <Button type="primary" icon={<Plus className="size-4" />} onClick={addChannel}>
-                                        新增渠道
-                                    </Button>
+                                    <Dropdown
+                                        trigger={["click"]}
+                                        menu={{
+                                            items: channelProviderPresets.map((preset) => ({ key: preset.id, label: preset.label })),
+                                            onClick: ({ key }) => addChannel(key as ChannelProvider),
+                                        }}
+                                    >
+                                        <Button type="primary" icon={<Plus className="size-4" />}>
+                                            新增渠道
+                                        </Button>
+                                    </Dropdown>
                                 </div>
                                 <div className="space-y-2">
                                     {config.channels.map((channel) => (
@@ -174,7 +190,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             <div className="min-w-0">
                                                 <div className="truncate text-sm font-semibold">{channel.name || "未命名渠道"}</div>
                                                 <div className="mt-1 truncate text-xs text-stone-500">
-                                                    {apiFormatLabel(channel.apiFormat)} · {channel.models.length} 个模型 · {channel.baseUrl || "未填写接口地址"}
+                                                    {channelProviderLabel(channel.provider)} · {apiFormatLabel(channel.apiFormat)} · {channel.models.length} 个模型 · {channel.baseUrl || "未填写接口地址"}
                                                 </div>
                                             </div>
                                             <div className="flex shrink-0 gap-2">
@@ -329,17 +345,21 @@ export function AppConfigModal() {
 }
 
 function withChannels(config: AiConfig, channels: ModelChannel[]): AiConfig {
+    const firstChannel = channels[0];
     const next: AiConfig = {
         ...config,
         channels,
         models: modelOptionsFromChannels(channels),
-        baseUrl: channels[0]?.baseUrl || config.baseUrl,
-        apiKey: channels[0]?.apiKey || config.apiKey,
-        apiFormat: channels[0]?.apiFormat || config.apiFormat,
+        baseUrl: firstChannel?.baseUrl ?? config.baseUrl,
+        apiKey: firstChannel?.apiKey ?? config.apiKey,
+        authType: firstChannel?.authType ?? config.authType,
+        apiFormat: firstChannel?.apiFormat ?? config.apiFormat,
     };
+    const imageModel = pickDefaultModel(next, "image", config.imageModel);
     return {
         ...next,
-        imageModel: pickDefaultModel(next, "image", config.imageModel),
+        model: imageModel,
+        imageModel,
         videoModel: pickDefaultModel(next, "video", config.videoModel),
         textModel: pickDefaultModel(next, "text", config.textModel),
         audioModel: pickDefaultModel(next, "audio", config.audioModel),
@@ -357,7 +377,9 @@ function normalizeImageCount(value: string) {
 }
 
 function apiFormatLabel(apiFormat: ApiCallFormat) {
-    return apiFormat === "gemini" ? "Gemini" : "OpenAI";
+    if (apiFormat === "gemini") return "Gemini";
+    if (apiFormat === "qwen") return "Qwen / DashScope";
+    return "OpenAI";
 }
 
 function formatWebdavTime(value: string) {

@@ -2,7 +2,7 @@ import axios from "axios";
 
 import { audioMimeType, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue } from "@/lib/audio-generation";
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
-import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
+import { assertModelChannelAvailable, buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
 
 type RequestOptions = { signal?: AbortSignal };
@@ -13,20 +13,21 @@ function aiApiUrl(config: AiConfig, path: string) {
 
 function aiHeaders(config: AiConfig) {
     return {
-        Authorization: `Bearer ${config.apiKey}`,
+        ...(config.authType === "none" ? {} : { Authorization: `Bearer ${config.apiKey}` }),
         "Content-Type": "application/json",
     };
 }
 
 export async function requestAudioGeneration(config: AiConfig, prompt: string, options?: RequestOptions): Promise<Blob> {
+    assertModelChannelAvailable(config, config.model || config.audioModel);
     const requestConfig = resolveModelRequestConfig(config, config.model || config.audioModel);
     const model = requestConfig.model.trim();
     const format = normalizeAudioFormatValue(config.audioFormat);
-    const script = resolveModelScript(config, config.model || config.audioModel);
+    const script = resolveModelScript(config, config.model || config.audioModel, "audio");
     if (script) {
         if (!model) throw new Error("请先配置音频模型");
         if (!requestConfig.baseUrl.trim()) throw new Error("请先配置 Base URL");
-        if (!requestConfig.apiKey.trim()) throw new Error("请先配置 API Key");
+        if (requestConfig.authType !== "none" && !requestConfig.apiKey.trim()) throw new Error("请先配置 API Key");
         try {
             const result = await runModelPlugin({
                 capability: "audio",
@@ -86,8 +87,8 @@ export async function storeGeneratedAudio(blob: Blob, format = "mp3"): Promise<U
 function assertAudioConfig(config: AiConfig, model: string) {
     if (!model) throw new Error("请先配置音频模型");
     if (!config.baseUrl.trim()) throw new Error("请先配置 Base URL");
-    if (!config.apiKey.trim()) throw new Error("请先配置 API Key");
-    if (config.apiFormat === "gemini") throw new Error("Gemini 调用格式暂不支持音频生成，请使用 OpenAI 格式渠道");
+    if (config.authType !== "none" && !config.apiKey.trim()) throw new Error("请先配置 API Key");
+    if (config.apiFormat !== "openai") throw new Error(`${config.apiFormat === "gemini" ? "Gemini" : "Qwen"} 调用格式暂不支持默认音频生成，请为该模型配置调用脚本`);
 }
 
 async function assertAudioBlob(blob: Blob) {

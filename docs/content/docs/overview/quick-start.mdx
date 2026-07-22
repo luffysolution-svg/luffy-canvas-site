@@ -1,21 +1,21 @@
 ---
 title: 快速开始
-description: 用最少步骤把无限画布跑起来
+description: 用最少步骤把 luffy-canvas-site 跑起来
 ---
 
 # 快速开始
 
 如果你只是想先把项目跑起来，优先部署或启动 `web/` 前端。
 
-## Vercel 部署
+## Netlify 部署
 
-在 Vercel 中导入仓库即可，根目录 `vercel.json` 会构建 `web/`。当前版本的 AI 请求由浏览器前台直连用户自己的 OpenAI 兼容地址，不需要额外配置服务端。
+在 Netlify 中导入仓库即可，根目录 `netlify.toml` 会构建 `web/` 并配置 React Router 的 SPA 回退。当前版本的 AI 请求由浏览器前台直连用户自己的模型接口，不需要额外配置服务端。
 
 ## 本地启动
 
 ```bash
-git clone git@github.com:basketikun/infinite-canvas.git
-cd infinite-canvas
+git clone https://github.com/luffysolution-svg/luffy-canvas-site.git
+cd luffy-canvas-site
 cd web
 bun install
 bun run dev
@@ -32,8 +32,8 @@ http://localhost:3000
 如果你需要基于当前源码构建镜像：
 
 ```bash
-docker build -t infinite-canvas .
-docker run --rm -p 3000:3000 infinite-canvas
+docker build -t luffy-canvas-site .
+docker run --rm -p 3000:3000 luffy-canvas-site
 ```
 
 ## 首次使用建议

@@ -1,6 +1,6 @@
 import { javascript } from "@codemirror/lang-javascript";
 import CodeMirror from "@uiw/react-codemirror";
-import { Button, Modal } from "antd";
+import { App, Button, Modal } from "antd";
 import { useEffect, useState } from "react";
 
 import { PLUGIN_RETURNS, PLUGIN_TEMPLATES, PLUGIN_VARIABLES } from "@/services/api/model-plugin";
@@ -12,7 +12,12 @@ function isDarkMode() {
     return typeof document !== "undefined" && document.documentElement.classList.contains("dark");
 }
 
+function validateScriptSyntax(script: string) {
+    new Function(`"use strict"; return (async () => {\n${script}\n})();`);
+}
+
 export function ModelScriptEditor({ open, capability, modelName, value, onSave, onClose }: { open: boolean; capability: ModelCapability; modelName: string; value: string; onSave: (script: string) => void; onClose: () => void }) {
+    const { message } = App.useApp();
     const [draft, setDraft] = useState(value);
     useEffect(() => {
         if (open) setDraft(value);
@@ -30,6 +35,7 @@ export function ModelScriptEditor({ open, capability, modelName, value, onSave, 
                         {modelName ? ` - ${modelName}` : ""}
                     </div>
                     <div className="mt-1 text-xs font-normal text-stone-500">脚本是一段异步函数体，直接使用下方变量，最后 return 结果；留空则使用系统默认调用。</div>
+                    <div className="mt-1 text-xs font-normal text-amber-600 dark:text-amber-400">安全提示：脚本会在当前页面主上下文执行，可读取 API Key 和页面数据；请仅粘贴可信代码。</div>
                 </div>
             }
             width={1080}
@@ -53,7 +59,14 @@ export function ModelScriptEditor({ open, capability, modelName, value, onSave, 
                         <Button
                             type="primary"
                             onClick={() => {
-                                onSave(draft.trim());
+                                const script = draft.trim();
+                                try {
+                                    validateScriptSyntax(script);
+                                } catch (error) {
+                                    message.error(`脚本语法错误：${error instanceof Error ? error.message : "请检查代码"}`);
+                                    return;
+                                }
+                                onSave(script);
                                 onClose();
                             }}
                         >

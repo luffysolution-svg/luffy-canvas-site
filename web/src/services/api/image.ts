@@ -1,12 +1,13 @@
 import axios from "axios";
 
-import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { assertModelChannelAvailable, buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
-import { dataUrlToFile } from "@/lib/image-utils";
+import { dataUrlToFile, getDataUrlByteSize } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
 import { imageToDataUrl } from "@/services/image-storage";
 import type { ReferenceImage } from "@/types/image";
+import { qwenApiUrl, qwenCompatibleApiUrl } from "./provider-urls";
 
 export type AiTextMessage = {
     role: "system" | "user" | "assistant";
@@ -73,6 +74,14 @@ type ImageApiResponse = {
     code?: number;
     msg?: string;
 };
+type QwenImagePayload = {
+    output?: {
+        choices?: Array<{ message?: { content?: Array<{ image?: string }> } }>;
+        results?: Array<{ url?: string }>;
+    };
+    code?: string;
+    message?: string;
+};
 type GeminiPart = {
     text?: string;
     inlineData?: { mimeType?: string; data?: string };
@@ -113,8 +122,10 @@ const IMAGE_MAX_EDGE = 3840;
 const IMAGE_MAX_RATIO = 3;
 const IMAGE_OUTPUT_FORMAT = "png";
 
-const GEMINI_SUPPORTED_RATIOS = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"];
+const GEMINI_FLASH_IMAGE_RATIOS = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"];
+const GEMINI_PRO_IMAGE_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
 const GEMINI_IMAGE_SIZE_BY_QUALITY: Record<string, string> = { low: "1K", medium: "2K", high: "4K", standard: "1K", hd: "2K" };
+const GEMINI_IMAGE_SIZE_PIXELS: Record<string, number> = { "512": 512, "1K": 1024, "2K": 2048, "4K": 4096 };
 
 function normalizeQuality(quality: string) {
     const value = quality.trim().toLowerCase();
@@ -194,40 +205,133 @@ function resolveRequestSize(quality: string | undefined, size: string) {
     throw new Error("图像尺寸格式不支持，请使用 auto、9:16 或 1024x1024");
 }
 
+function resolveQwenRequestSize(model: string, quality: string | undefined, size: string) {
+    const normalizedModel = model.toLowerCase();
+    const isQwenImage2 = normalizedModel.includes("qwen-image-2.0");
+    const capsEdgesAt2K = normalizedModel.includes("qwen-image-edit-max") || normalizedModel.includes("qwen-image-edit-plus");
+    const resolved = isQwenImage2
+        ? resolveQwenImage2Size(quality === "high" ? "medium" : quality, size)
+        : capsEdgesAt2K
+          ? resolveQwenEditSize(quality === "high" ? "medium" : quality, size)
+          : resolveRequestSize(quality, size);
+    const dimensions = resolved ? parseImageDimensions(resolved) : null;
+    const usesFixedSizes = !isQwenImage2 && !normalizedModel.includes("edit") && ["qwen-image-max", "qwen-image-plus", "qwen-image"].some((name) => normalizedModel === name || normalizedModel.startsWith(`${name}-`));
+    if (usesFixedSizes && dimensions) {
+        const ratio = dimensions.width / dimensions.height;
+        const sizes = [
+            { ratio: 16 / 9, value: "1664x928" },
+            { ratio: 4 / 3, value: "1472x1104" },
+            { ratio: 1, value: "1328x1328" },
+            { ratio: 3 / 4, value: "1104x1472" },
+            { ratio: 9 / 16, value: "928x1664" },
+        ];
+        return sizes.reduce((best, current) => (Math.abs(current.ratio - ratio) < Math.abs(best.ratio - ratio) ? current : best), sizes[0]).value;
+    }
+    return resolved;
+}
+
+function resolveQwenEditSize(quality: string | undefined, size: string) {
+    const value = size.trim();
+    if (!value || value.toLowerCase() === "auto") return undefined;
+    const explicit = parseImageDimensions(value);
+    if (explicit) {
+        assertQwenEditSize(explicit.width, explicit.height);
+        return `${explicit.width}x${explicit.height}`;
+    }
+    if (!value.includes(":")) throw new Error("Qwen 图像尺寸格式不支持，请使用 auto、9:16 或 1024x1024");
+    const ratio = parseRatioValue(value);
+    const aspect = ratio.width / ratio.height;
+    const targetPixels = (quality ? QUALITY_BASE[quality] : QUALITY_BASE.low) ** 2;
+    let width = Math.sqrt(targetPixels * aspect);
+    let height = width / aspect;
+    const scale = Math.min(1, 2048 / width, 2048 / height);
+    width = Math.max(512, Math.min(2048, Math.round((width * scale) / IMAGE_SIZE_STEP) * IMAGE_SIZE_STEP));
+    height = Math.max(512, Math.min(2048, Math.round((height * scale) / IMAGE_SIZE_STEP) * IMAGE_SIZE_STEP));
+    assertQwenEditSize(width, height);
+    return `${width}x${height}`;
+}
+
+function resolveQwenImage2Size(quality: string | undefined, size: string) {
+    const value = size.trim();
+    if (!value || value.toLowerCase() === "auto") return undefined;
+    const explicit = parseImageDimensions(value);
+    let dimensions = explicit;
+    if (!dimensions && value.includes(":")) {
+        const ratio = parseRatioValue(value);
+        const targetPixels = (quality ? QUALITY_BASE[quality] : QUALITY_BASE.medium) ** 2;
+        const scale = Math.sqrt(targetPixels / (ratio.width * ratio.height));
+        dimensions = {
+            width: Math.max(IMAGE_SIZE_STEP, Math.round((ratio.width * scale) / IMAGE_SIZE_STEP) * IMAGE_SIZE_STEP),
+            height: Math.max(IMAGE_SIZE_STEP, Math.round((ratio.height * scale) / IMAGE_SIZE_STEP) * IMAGE_SIZE_STEP),
+        };
+    }
+    if (!dimensions) throw new Error("Qwen 图像尺寸格式不支持，请使用 auto、9:16 或 1024x1024");
+    if (!Number.isInteger(dimensions.width) || !Number.isInteger(dimensions.height) || dimensions.width <= 0 || dimensions.height <= 0) throw new Error("Qwen 图像尺寸必须是正整数，例如 512x512");
+    const pixels = dimensions.width * dimensions.height;
+    if (explicit) {
+        assertQwenImagePixelRange(dimensions.width, dimensions.height, "Qwen-Image 2.0");
+        return `${dimensions.width}x${dimensions.height}`;
+    }
+    const minPixels = 512 * 512;
+    const maxPixels = 2048 * 2048;
+    if (pixels < minPixels) throw new Error("Qwen-Image 2.0 图像总像素不能低于 512×512");
+    if (pixels <= maxPixels) return `${dimensions.width}x${dimensions.height}`;
+    const scale = Math.sqrt(maxPixels / pixels);
+    const width = Math.max(IMAGE_SIZE_STEP, Math.floor((dimensions.width * scale) / IMAGE_SIZE_STEP) * IMAGE_SIZE_STEP);
+    const height = Math.max(IMAGE_SIZE_STEP, Math.floor((dimensions.height * scale) / IMAGE_SIZE_STEP) * IMAGE_SIZE_STEP);
+    return `${width}x${height}`;
+}
+
+function assertQwenImagePixelRange(width: number, height: number, modelLabel: string) {
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) throw new Error(`${modelLabel} 图像尺寸必须是正整数，例如 512x512`);
+    const pixels = width * height;
+    if (pixels < 512 * 512 || pixels > 2048 * 2048) throw new Error(`${modelLabel} 图像总像素需在 512×512 到 2048×2048 之间`);
+}
+
+function assertQwenEditSize(width: number, height: number) {
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 512 || width > 2048 || height < 512 || height > 2048) throw new Error("Qwen-Image Edit Max / Plus 的宽和高需分别在 512 到 2048 之间");
+}
+
 function resolveGeminiImageConfig(config: AiConfig) {
     const value = config.size.trim();
     const dimensions = parseImageDimensions(value);
     const ratio = dimensions ? `${dimensions.width}:${dimensions.height}` : value;
-    const aspectRatio = value && value.toLowerCase() !== "auto" ? closestGeminiAspectRatio(ratio) : undefined;
-    const imageSize = supportsGeminiImageSize(config.model) ? resolveGeminiImageSize(config.quality, dimensions) : undefined;
+    const capabilities = geminiImageCapabilities(config.model);
+    const aspectRatio = value && value.toLowerCase() !== "auto" ? closestGeminiAspectRatio(ratio, capabilities.ratios) : undefined;
+    const imageSize = resolveGeminiImageSize(config.quality, dimensions, capabilities.sizes);
     const image = { ...(aspectRatio ? { aspectRatio } : {}), ...(imageSize ? { imageSize } : {}) };
     return Object.keys(image).length ? { responseFormat: { image } } : {};
 }
 
-function closestGeminiAspectRatio(value: string) {
-    const ratio = parseImageRatio(value);
+function geminiImageCapabilities(model: string) {
+    const value = model.trim().toLowerCase();
+    if (value.includes("gemini-3.1-flash-lite-image")) return { ratios: GEMINI_FLASH_IMAGE_RATIOS, sizes: ["512", "1K"] };
+    if (value.includes("gemini-3.1-flash-image")) return { ratios: GEMINI_FLASH_IMAGE_RATIOS, sizes: ["512", "1K", "2K", "4K"] };
+    if (value.includes("gemini-3-pro-image")) return { ratios: GEMINI_PRO_IMAGE_RATIOS, sizes: ["1K", "2K", "4K"] };
+    return { ratios: GEMINI_PRO_IMAGE_RATIOS, sizes: [] as string[] };
+}
+
+function closestGeminiAspectRatio(value: string, supportedRatios: string[]) {
+    const ratio = parseRatioValue(value);
     const target = ratio.width / ratio.height;
-    return GEMINI_SUPPORTED_RATIOS.reduce((best, item) => {
+    return supportedRatios.reduce((best, item) => {
         const current = parseRatioValue(item);
         const bestRatio = parseRatioValue(best);
         return Math.abs(current.width / current.height - target) < Math.abs(bestRatio.width / bestRatio.height - target) ? item : best;
     });
 }
 
-function resolveGeminiImageSize(quality: string, dimensions: { width: number; height: number } | null) {
+function resolveGeminiImageSize(quality: string, dimensions: { width: number; height: number } | null, supportedSizes: string[]) {
+    if (!supportedSizes.length) return undefined;
     const normalizedQuality = normalizeQuality(quality);
-    if (normalizedQuality) return GEMINI_IMAGE_SIZE_BY_QUALITY[normalizedQuality];
-    if (!dimensions) return undefined;
-    const edge = Math.max(dimensions.width, dimensions.height);
-    if (edge <= 768) return "512";
-    if (edge <= 1536) return "1K";
-    if (edge <= 3072) return "2K";
-    return "4K";
-}
-
-function supportsGeminiImageSize(model: string) {
-    const value = model.toLowerCase();
-    return value.includes("gemini-3") || value.includes("3.1") || value.includes("3-pro");
+    let requested = normalizedQuality ? GEMINI_IMAGE_SIZE_BY_QUALITY[normalizedQuality] : undefined;
+    if (!requested && dimensions) {
+        const edge = Math.max(dimensions.width, dimensions.height);
+        requested = edge <= 768 ? "512" : edge <= 1536 ? "1K" : edge <= 3072 ? "2K" : "4K";
+    }
+    if (!requested) return undefined;
+    const requestedPixels = GEMINI_IMAGE_SIZE_PIXELS[requested];
+    return supportedSizes.reduce((best, item) => (Math.abs(GEMINI_IMAGE_SIZE_PIXELS[item] - requestedPixels) < Math.abs(GEMINI_IMAGE_SIZE_PIXELS[best] - requestedPixels) ? item : best));
 }
 
 function resolveImageDataUrl(item: Record<string, unknown>) {
@@ -259,11 +363,13 @@ function parseImagePayload(payload: ImageApiResponse) {
 
 function readAxiosError(error: unknown, fallback: string) {
     if (axios.isCancel(error)) return "请求已取消";
-    if (axios.isAxiosError<{ error?: { message?: string }; msg?: string; code?: number }>(error)) {
+    if (axios.isAxiosError<{ error?: { message?: string }; msg?: string; message?: string; code?: number | string }>(error)) {
         const responseData = error.response?.data;
-        return responseData?.msg || responseData?.error?.message || readStatusError(error.response?.status, fallback);
+        if (!error.response) return "无法连接接口，请检查 Base URL、网络连接，以及服务是否允许浏览器跨域（CORS）请求";
+        return responseData?.msg || responseData?.message || responseData?.error?.message || readStatusError(error.response?.status, fallback);
     }
     if (error instanceof DOMException && error.name === "AbortError") return "请求已取消";
+    if (error instanceof TypeError && /fetch|network|load failed/i.test(error.message)) return "无法连接接口，请检查 Base URL、网络连接，以及服务是否允许浏览器跨域（CORS）请求";
     return error instanceof Error ? error.message : fallback;
 }
 
@@ -279,12 +385,13 @@ function withSystemPrompt(config: AiConfig, prompt: string) {
 }
 
 function aiApiUrl(config: AiConfig, path: string) {
+    if (config.apiFormat === "qwen") return qwenCompatibleApiUrl(config.baseUrl, path);
     return buildApiUrl(config.baseUrl, path);
 }
 
-function aiHeaders(config: AiConfig, contentType?: string) {
+function aiHeaders(config: Pick<AiConfig, "apiKey" | "authType">, contentType?: string) {
     return {
-        Authorization: `Bearer ${config.apiKey}`,
+        ...(config.authType === "none" ? {} : { Authorization: `Bearer ${config.apiKey}` }),
         ...(contentType ? { "Content-Type": contentType } : {}),
     };
 }
@@ -305,9 +412,9 @@ function geminiApiUrl(config: Pick<AiConfig, "baseUrl" | "model">, action?: "gen
     return `${baseUrl}/models/${encodeURIComponent(geminiModelName(config.model))}:${action}`;
 }
 
-function geminiHeaders(config: Pick<AiConfig, "apiKey">) {
+function geminiHeaders(config: Pick<AiConfig, "apiKey" | "authType">) {
     return {
-        "x-goog-api-key": config.apiKey,
+        ...(config.authType === "none" ? {} : { "x-goog-api-key": config.apiKey }),
         "Content-Type": "application/json",
     };
 }
@@ -659,10 +766,56 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
     return images;
 }
 
+async function requestQwenImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, size: string | undefined, options?: RequestOptions) {
+    if (references.length > 3) throw new Error("Qwen 图片编辑最多支持 3 张参考图");
+    const content: Array<{ image: string } | { text: string }> = [];
+    for (const image of references) {
+        const dataUrl = await imageToDataUrl(image);
+        const mimeType = (dataUrl.match(/^data:([^;,]+)/)?.[1] || image.type || "").toLowerCase();
+        if (mimeType && !["image/jpeg", "image/jpg", "image/png", "image/bmp", "image/x-ms-bmp", "image/tiff", "image/webp", "image/gif"].includes(mimeType)) throw new Error("Qwen 参考图仅支持 JPG、JPEG、PNG、BMP、TIFF、WEBP 或 GIF 格式");
+        if ((image.bytes || getDataUrlByteSize(dataUrl)) > 10 * 1024 * 1024) throw new Error("Qwen 单张参考图不能超过 10MB");
+        content.push({ image: dataUrl });
+    }
+    content.push({ text: withSystemPrompt(config, prompt) });
+    const model = config.model.toLowerCase();
+    const maxBatchSize = ["qwen-image-2.0", "qwen-image-edit-max", "qwen-image-edit-plus"].some((name) => model.includes(name)) ? 6 : 1;
+    const isLegacyEdit = (model === "qwen-image-edit" || model.startsWith("qwen-image-edit-")) && !model.includes("qwen-image-edit-max") && !model.includes("qwen-image-edit-plus");
+    const batches: number[] = [];
+    for (let remaining = count; remaining > 0; remaining -= maxBatchSize) batches.push(Math.min(maxBatchSize, remaining));
+    const requests = batches.map((batchSize) =>
+        axios.post<QwenImagePayload>(
+            qwenApiUrl(config.baseUrl, "services/aigc/multimodal-generation/generation"),
+            {
+                model: config.model,
+                input: { messages: [{ role: "user", content }] },
+                parameters: {
+                    n: batchSize,
+                    ...(!isLegacyEdit && size ? { size: size.replace("x", "*") } : {}),
+                    ...(!isLegacyEdit ? { prompt_extend: true } : {}),
+                    watermark: false,
+                },
+            },
+            { headers: aiHeaders(config, "application/json"), signal: options?.signal },
+        ),
+    );
+    return (await Promise.all(requests)).flatMap((response) => parseQwenImagePayload(response.data)).slice(0, count);
+}
+
+function parseQwenImagePayload(payload: QwenImagePayload) {
+    if (payload.code) throw new Error(payload.message || payload.code);
+    const urls = [
+        ...(payload.output?.choices || []).flatMap((choice) => choice.message?.content || []).map((item) => item.image),
+        ...(payload.output?.results || []).map((item) => item.url),
+    ].filter((url): url is string => Boolean(url));
+    if (!urls.length) throw new Error("Qwen 接口没有返回图片");
+    return urls.map((dataUrl) => ({ id: nanoid(), dataUrl }));
+}
+
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
+    assertModelChannelAvailable(config, config.model || config.imageModel);
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
-    const script = resolveModelScript(config, config.model || config.imageModel);
+    const script = resolveModelScript(config, config.model || config.imageModel, "image");
     if (script) {
         const quality = normalizeQuality(config.quality);
         const requestSize = resolveRequestSize(quality, config.size);
@@ -685,6 +838,15 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     if (requestConfig.apiFormat === "gemini") {
         try {
             return await requestGeminiImages(requestConfig, prompt, [], n, options);
+        } catch (error) {
+            throw new Error(readAxiosError(error, "请求失败"));
+        }
+    }
+    if (requestConfig.apiFormat === "qwen") {
+        const quality = normalizeQuality(config.quality);
+        const requestSize = resolveQwenRequestSize(requestConfig.model, quality, config.size);
+        try {
+            return await requestQwenImages(requestConfig, prompt, [], n, requestSize, options);
         } catch (error) {
             throw new Error(readAxiosError(error, "请求失败"));
         }
@@ -718,15 +880,17 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
 }
 
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], mask?: ReferenceImage, options?: RequestOptions) {
+    assertModelChannelAvailable(config, config.model || config.imageModel);
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
-    const script = resolveModelScript(config, config.model || config.imageModel);
+    const script = resolveModelScript(config, config.model || config.imageModel, "image");
     if (script) {
         const quality = normalizeQuality(config.quality);
         const requestSize = resolveRequestSize(quality, config.size);
         const background = normalizeBackground(config.background);
         const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
+        const maskDataUrl = mask ? await imageToDataUrl(mask) : undefined;
         try {
             const result = await runModelPlugin({
                 capability: "image",
@@ -734,6 +898,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
                 config: requestConfig,
                 prompt: withSystemPrompt(requestConfig, requestPrompt),
                 images: refs,
+                mask: maskDataUrl,
                 params: { size: requestSize, quality, count: n, ...(background ? { background } : {}) },
                 signal: options?.signal,
             });
@@ -746,6 +911,16 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         if (mask) throw new Error("Gemini 调用格式暂不支持蒙版编辑");
         try {
             return await requestGeminiImages(requestConfig, requestPrompt, references, n, options);
+        } catch (error) {
+            throw new Error(readAxiosError(error, "请求失败"));
+        }
+    }
+    if (requestConfig.apiFormat === "qwen") {
+        if (mask) throw new Error("Qwen 调用格式暂不支持蒙版编辑");
+        const quality = normalizeQuality(config.quality);
+        const requestSize = resolveQwenRequestSize(requestConfig.model, quality, config.size);
+        try {
+            return await requestQwenImages(requestConfig, requestPrompt, references, n, requestSize, options);
         } catch (error) {
             throw new Error(readAxiosError(error, "请求失败"));
         }
@@ -782,8 +957,9 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
 }
 
 export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {
+    assertModelChannelAvailable(config, config.model || config.textModel);
     const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
-    const script = resolveModelScript(config, config.model || config.textModel);
+    const script = resolveModelScript(config, config.model || config.textModel, "text");
     if (script) {
         try {
             const answer = await runModelPlugin<string>({
@@ -818,7 +994,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
     }
 }
 
-export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
+export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "authType" | "apiFormat">) {
     try {
         if (config.apiFormat === "gemini") {
             const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...config }) });
@@ -828,10 +1004,9 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
                 .filter((id): id is string => Boolean(id))
                 .sort((a, b) => a.localeCompare(b));
         }
-        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.baseUrl, "/models"), {
-            headers: {
-                Authorization: `Bearer ${config.apiKey}`,
-            },
+        const modelsUrl = config.apiFormat === "qwen" ? qwenCompatibleApiUrl(config.baseUrl, "models") : buildApiUrl(config.baseUrl, "/models");
+        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(modelsUrl, {
+            headers: aiHeaders(config),
         });
         return (response.data.data || [])
             .map((model) => model.id)
@@ -843,12 +1018,13 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
 }
 
 export async function fetchChannelModels(channel: ModelChannel) {
-    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
+    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, authType: channel.authType, apiFormat: channel.apiFormat });
 }
 
-const defaultGeminiConfig: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat" | "model" | "systemPrompt"> = {
+const defaultGeminiConfig: Pick<AiConfig, "baseUrl" | "apiKey" | "authType" | "apiFormat" | "model" | "systemPrompt"> = {
     baseUrl: "https://generativelanguage.googleapis.com",
     apiKey: "",
+    authType: "bearer",
     apiFormat: "gemini",
     model: "",
     systemPrompt: "",

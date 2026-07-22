@@ -4,7 +4,7 @@ import { BookOpen, Keyboard, Puzzle, Settings2 } from "lucide-react";
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
 import { GitHubLink } from "@/components/layout/github-link";
 import { VersionReleaseModal } from "@/components/layout/version-release-modal";
-import { DOCS_URL } from "@/constant/env";
+import { DOCS_URL, UPSTREAM_REPOSITORY_URL } from "@/constant/env";
 import { cn } from "@/lib/utils";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useConfigStore } from "@/stores/use-config-store";
@@ -35,6 +35,15 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
                     <Puzzle className="size-4" />
                 </button>
             ) : null}
+            <a
+                href={UPSTREAM_REPOSITORY_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-7 shrink-0 items-center px-1.5 text-[11px] text-stone-400 transition hover:text-stone-700 dark:text-stone-500 dark:hover:text-stone-200"
+                title="基于 basketikun/infinite-canvas 二次开发"
+            >
+                致谢
+            </a>
             <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className={naturalIconClass} style={iconStyle} aria-label="文档" title="文档">
                 <BookOpen className="size-4" />
             </a>

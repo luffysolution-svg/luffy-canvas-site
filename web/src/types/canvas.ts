@@ -43,6 +43,7 @@ export type CanvasNodeMetadata = {
     vquality?: string;
     generateAudio?: string;
     watermark?: string;
+    videoReferenceMode?: string;
     audioVoice?: string;
     audioFormat?: string;
     audioSpeed?: string;
@@ -95,6 +96,10 @@ export type CanvasAssistantImage = {
     dataUrl: string;
     storageKey?: string;
     prompt: string;
+    width?: number;
+    height?: number;
+    bytes?: number;
+    mimeType?: string;
 };
 
 export type CanvasAssistantMessage = {

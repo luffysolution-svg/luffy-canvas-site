@@ -10,7 +10,7 @@ import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
-import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { modelOptionLabel, resolveModelChannel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
 import { formatBytes, formatDuration, getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
@@ -65,6 +65,7 @@ type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => 
 const LOG_STORE_KEY = "infinite-canvas:image_generation_logs";
 const RESULT_ACTION_BUTTON_CLASS = "min-w-0 px-1.5 [&_.ant-btn-icon]:shrink-0 [&>span:last-child]:min-w-0 [&>span:last-child]:truncate";
 const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
+const QWEN_REFERENCE_MIME_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/bmp", "image/x-ms-bmp", "image/tiff", "image/webp", "image/gif"];
 
 export default function ImagePage() {
     const { message } = App.useApp();
@@ -97,8 +98,11 @@ export default function ImagePage() {
     const agentTaskIdRef = useRef<string | undefined>(undefined);
 
     const model = effectiveConfig.imageModel || effectiveConfig.model;
+    const qwenReferences = resolveModelChannel(effectiveConfig, model).apiFormat === "qwen";
+    const referenceLimit = qwenReferences ? 3 : Number.MAX_SAFE_INTEGER;
+    const referenceMaxBytes = qwenReferences ? 10 * 1024 * 1024 : Number.MAX_SAFE_INTEGER;
     const canGenerate = Boolean(prompt.trim());
-    const generationCount = Math.max(1, Math.min(10, Number(config.count) || 1));
+    const generationCount = Math.max(1, Math.min(15, Number(config.count) || 1));
 
     useEffect(() => {
         if (!running || !startedAt) return;
@@ -111,14 +115,16 @@ export default function ImagePage() {
     }, []);
 
     const addReferences = async (files?: FileList | null) => {
-        const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
+        const candidates = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
+        const imageFiles = candidates.filter((file) => file.size <= referenceMaxBytes && (!qwenReferences || QWEN_REFERENCE_MIME_TYPES.includes(file.type.toLowerCase()))).slice(0, Math.max(0, referenceLimit - references.length));
+        if (imageFiles.length < candidates.length) message.warning(qwenReferences ? "Qwen 最多支持 3 张、单张不超过 10MB 的 JPG/PNG/BMP/TIFF/WEBP/GIF 参考图" : "部分参考图未能添加");
         const nextReferences = await Promise.all(
             imageFiles.map(async (file) => {
                 const image = await uploadImage(file);
-                return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
+                return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, width: image.width, height: image.height };
             }),
         );
-        setReferences((value) => [...value, ...nextReferences]);
+        setReferences((value) => [...value, ...nextReferences].slice(0, referenceLimit));
     };
 
     const addReferencesFromClipboard = async () => {
@@ -129,13 +135,15 @@ export default function ImagePage() {
                 message.error("剪切板里没有可读取的图片");
                 return;
             }
+            const acceptedBlobs = blobs.filter((blob) => blob.size <= referenceMaxBytes && (!qwenReferences || QWEN_REFERENCE_MIME_TYPES.includes(blob.type.toLowerCase()))).slice(0, Math.max(0, referenceLimit - references.length));
+            if (acceptedBlobs.length < blobs.length) message.warning(qwenReferences ? "Qwen 最多支持 3 张、单张不超过 10MB 的 JPG/PNG/BMP/TIFF/WEBP/GIF 参考图" : "部分参考图未能添加");
             const nextReferences = await Promise.all(
-                blobs.map(async (blob, index) => {
+                acceptedBlobs.map(async (blob, index) => {
                     const image = await uploadImage(blob);
-                    return { id: nanoid(), name: `clipboard-${index + 1}.png`, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
+                    return { id: nanoid(), name: `clipboard-${index + 1}.png`, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, width: image.width, height: image.height };
                 }),
             );
-            setReferences((value) => [...value, ...nextReferences]);
+            setReferences((value) => [...value, ...nextReferences].slice(0, referenceLimit));
             message.success(`已读取 ${nextReferences.length} 张参考图`);
         } catch {
             message.error("剪切板里没有可读取的图片");
@@ -235,8 +243,12 @@ export default function ImagePage() {
     };
 
     const addResultToReferences = async (image: GeneratedImage, index: number) => {
+        if (references.length >= referenceLimit || image.bytes > referenceMaxBytes) {
+            message.warning("Qwen 最多支持 3 张参考图，且单张不能超过 10MB");
+            return;
+        }
         const stored = await uploadImage(image.dataUrl);
-        setReferences((value) => [...value, { id: nanoid(), name: `result-${index + 1}.png`, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }]);
+        setReferences((value) => [...value, { id: nanoid(), name: `result-${index + 1}.png`, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey, bytes: stored.bytes, width: stored.width, height: stored.height }].slice(0, referenceLimit));
         message.success("已加入参考图");
     };
 
@@ -259,7 +271,12 @@ export default function ImagePage() {
             setPrompt(payload.content);
         } else if (payload.kind === "image") {
             const stored = await uploadImage(payload.dataUrl);
-            setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }]);
+            if (references.length >= referenceLimit || stored.bytes > referenceMaxBytes || (qwenReferences && !QWEN_REFERENCE_MIME_TYPES.includes(stored.mimeType.toLowerCase()))) {
+                message.warning("Qwen 最多支持 3 张、单张不超过 10MB 的 JPG/PNG/BMP/TIFF/WEBP/GIF 参考图");
+                setAssetPickerOpen(false);
+                return;
+            }
+            setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey, bytes: stored.bytes, width: stored.width, height: stored.height }].slice(0, referenceLimit));
         } else {
             message.warning("生图工作台只能使用文本或图片资产");
         }
@@ -548,7 +565,7 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog }: {
                 <ModelPicker config={config} value={model} onChange={(value) => updateConfig("imageModel", value)} capability="image" fullWidth onMissingConfig={() => openConfigDialog(false)} />
             </label>
             <div className="col-span-2">
-                <ImageSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" maxCount={10} />
+                <ImageSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" maxCount={15} />
             </div>
         </>
     );
@@ -569,7 +586,7 @@ function ResultImageCard({
 }) {
     return (
         <div className="overflow-hidden rounded-lg border border-stone-200 bg-background dark:border-stone-800">
-            <Image src={image.dataUrl} alt={`生成结果 ${index + 1}`} className="aspect-square object-cover" />
+            <Image src={image.dataUrl} alt={`生成结果 ${index + 1}`} className="block h-auto w-full object-contain" />
             <div className="space-y-2 border-t border-stone-200 px-3 py-2.5 dark:border-stone-800">
                 <div className="flex min-w-0 gap-x-2 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
                     <span>
