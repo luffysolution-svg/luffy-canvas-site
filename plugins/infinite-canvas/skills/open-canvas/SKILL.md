@@ -20,7 +20,7 @@ npx -y @basketikun/canvas-agent
 3. 在 Codex 右侧浏览器打开：
 
 ```text
-https://luffy-canvas-site.netlify.app/canvas?mode=new&agentUrl=<Local URL>&agentToken=<Connect token>
+https://luffy-canvas-site.vercel.app/canvas?mode=new&agentUrl=<Local URL>&agentToken=<Connect token>
 ```
 
 ## 本地版
