@@ -6,7 +6,7 @@
     "name": "LuffySolution",
     "url": "https://github.com/luffysolution-svg"
   },
-  "homepage": "https://luffy-canvas-site.netlify.app/",
+  "homepage": "https://luffy-canvas-site.vercel.app/",
   "repository": "https://github.com/luffysolution-svg/luffy-canvas-site",
   "license": "AGPL-3.0",
   "keywords": ["infinite-canvas", "canvas", "mcp", "agent"],
@@ -19,7 +19,7 @@
     "developerName": "LuffySolution",
     "category": "Productivity",
     "capabilities": ["Canvas", "MCP", "Creative Workflow"],
-    "websiteURL": "https://luffy-canvas-site.netlify.app/",
+    "websiteURL": "https://luffy-canvas-site.vercel.app/",
     "defaultPrompt": [
       "打开 luffy-canvas-site",
       "读取当前画布并总结节点结构",
