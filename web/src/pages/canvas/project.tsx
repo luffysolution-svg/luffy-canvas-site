@@ -4,11 +4,13 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Group, Video } from "lucide-react";
 import { saveAs } from "file-saver";
 
-import { IMAGE_REQUEST_UNKNOWN_MESSAGE, ImageRequestUnknownError, requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
+import { IMAGE_REQUEST_UNKNOWN_MESSAGE, ImageRequestUnknownError, requestImageQuestion } from "@/services/api/image";
+import { requestImageBatch } from "@/services/api/image-batch";
+import { ImageGenerationError } from "@/services/api/image-errors";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
 import { defaultConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
-import { uploadImage } from "@/services/image-storage";
+import { downloadImageBlob, uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
 import { nanoid } from "nanoid";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
@@ -84,7 +86,7 @@ import {
     type SelectionBox,
     type ViewportTransform,
 } from "@/types/canvas";
-import type { ReferenceImage } from "@/types/image";
+import type { ImageGenerationOutput, ReferenceImage } from "@/types/image";
 import type { ReferenceAudio } from "@/types/media";
 
 // 内置节点注册到统一注册表(模块加载时执行一次)
@@ -127,7 +129,75 @@ const NODE_STATUS_ERROR = "error" as const;
 const NODE_STATUS_UNKNOWN = "unknown" as const;
 
 function imageGenerationStatus(error: unknown) {
-    return error instanceof ImageRequestUnknownError ? NODE_STATUS_UNKNOWN : NODE_STATUS_ERROR;
+    return error instanceof ImageRequestUnknownError || (error instanceof ImageGenerationError && error.resultUnknown) ? NODE_STATUS_UNKNOWN : NODE_STATUS_ERROR;
+}
+
+function imageResultMetadata(metadata?: CanvasNodeMetadata): Partial<CanvasNodeMetadata> {
+    if (!metadata) return {};
+    return {
+        content: metadata.content,
+        storageKey: metadata.storageKey,
+        remoteUrl: metadata.remoteUrl,
+        expiresAt: metadata.expiresAt,
+        providerTaskId: metadata.providerTaskId,
+        providerRequestId: metadata.providerRequestId,
+        status: metadata.status,
+        generationStatus: metadata.generationStatus,
+        failureStage: metadata.failureStage,
+        errorDetails: metadata.errorDetails,
+        persistenceError: metadata.persistenceError,
+        naturalWidth: metadata.naturalWidth,
+        naturalHeight: metadata.naturalHeight,
+        bytes: metadata.bytes,
+        mimeType: metadata.mimeType,
+        optimizedReferenceCount: metadata.optimizedReferenceCount,
+    };
+}
+
+async function canvasImageFromOutput(output: ImageGenerationOutput): Promise<{ metadata: CanvasNodeMetadata; width?: number; height?: number }> {
+    const providerMetadata = {
+        expiresAt: output.expiresAt,
+        providerTaskId: output.providerTaskId,
+        providerRequestId: output.providerRequestId,
+    };
+    if (output.source === "remote_url") {
+        return {
+            metadata: {
+                content: output.remoteUrl,
+                remoteUrl: output.remoteUrl,
+                status: NODE_STATUS_SUCCESS,
+                generationStatus: "remote_only",
+                mimeType: output.mimeType,
+                ...providerMetadata,
+            },
+        };
+    }
+    try {
+        const uploaded = await uploadImage(output.dataUrl);
+        return {
+            metadata: { ...imageMetadata(uploaded), generationStatus: "stored", ...providerMetadata },
+            width: uploaded.width,
+            height: uploaded.height,
+        };
+    } catch (error) {
+        const meta = await readImageMeta(output.dataUrl);
+        return {
+            metadata: {
+                content: output.dataUrl,
+                status: NODE_STATUS_SUCCESS,
+                generationStatus: "generated",
+                failureStage: error instanceof ImageGenerationError ? error.failureStage : "indexeddb_write",
+                persistenceError: error instanceof Error ? error.message : "图片未能保存到本地",
+                naturalWidth: meta.width,
+                naturalHeight: meta.height,
+                bytes: getDataUrlByteSize(output.dataUrl),
+                mimeType: output.mimeType || meta.mimeType,
+                ...providerMetadata,
+            },
+            width: meta.width,
+            height: meta.height,
+        };
+    }
 }
 const IMAGE_PROMPT_REVERSE_PRESET = `请根据参考图片反推一段适合用于 AI 生图的提示词。
 
@@ -302,7 +372,13 @@ function InfiniteCanvasPage() {
         });
         setRunningNodeId((current) => (current === runningId ? null : current));
         if (!affectedNodeIds.size) return;
-        setNodes((prev) => prev.map((node) => (affectedNodeIds.has(node.id) && node.metadata?.status === NODE_STATUS_LOADING ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined } } : node)));
+        setNodes((prev) =>
+            prev.map((node) =>
+                affectedNodeIds.has(node.id) && node.metadata?.status === NODE_STATUS_LOADING
+                    ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, generationStatus: undefined, failureStage: undefined, errorDetails: undefined } }
+                    : node,
+            ),
+        );
     }, []);
 
     const confirmStopGeneration = useCallback(
@@ -739,9 +815,7 @@ function InfiniteCanvasPage() {
                             ...node.metadata,
                             batchChildIds: childIds,
                             primaryImageId,
-                            content: primaryNode?.metadata?.content || node.metadata.content,
-                            naturalWidth: primaryNode?.metadata?.naturalWidth || node.metadata.naturalWidth,
-                            naturalHeight: primaryNode?.metadata?.naturalHeight || node.metadata.naturalHeight,
+                            ...imageResultMetadata(primaryNode?.metadata),
                         },
                     };
                 });
@@ -1528,10 +1602,8 @@ function InfiniteCanvasPage() {
                           height: child.height,
                           metadata: {
                               ...node.metadata,
-                              content: child.metadata?.content,
+                              ...imageResultMetadata(child.metadata),
                               primaryImageId: child.id,
-                              naturalWidth: child.metadata?.naturalWidth,
-                              naturalHeight: child.metadata?.naturalHeight,
                               freeResize: child.metadata?.freeResize,
                           },
                       }
@@ -1557,10 +1629,61 @@ function InfiniteCanvasPage() {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node)));
     }, []);
 
-    const downloadNodeImage = useCallback((node: CanvasNodeData) => {
+    const downloadNodeImage = useCallback(async (node: CanvasNodeData) => {
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
-        saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
+        const filename = `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.mimeType || node.metadata.content)}`;
+        try {
+            const content = node.type === CanvasNodeType.Image && node.metadata.remoteUrl && !node.metadata.storageKey ? await downloadImageBlob(node.metadata.remoteUrl) : node.metadata.content;
+            saveAs(content, filename);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "图片下载失败");
+        }
+    }, [message]);
+
+    const storeNodeImage = useCallback(async (node: CanvasNodeData) => {
+        if (!node.metadata?.content) throw new Error("没有可保存的图片");
+        if (node.metadata.storageKey) {
+            return {
+                url: node.metadata.content,
+                storageKey: node.metadata.storageKey,
+                width: node.metadata.naturalWidth || node.width,
+                height: node.metadata.naturalHeight || node.height,
+                bytes: node.metadata.bytes || 0,
+                mimeType: node.metadata.mimeType || "image/png",
+            };
+        }
+        const storedImage = await uploadImage(node.metadata.remoteUrl || node.metadata.content);
+        setNodes((prev) =>
+            prev.map((item) =>
+                item.id === node.id
+                    ? {
+                          ...item,
+                          metadata: {
+                              ...item.metadata,
+                              ...imageMetadata(storedImage),
+                              remoteUrl: item.metadata?.remoteUrl,
+                              generationStatus: "stored",
+                              failureStage: undefined,
+                              persistenceError: undefined,
+                          },
+                      }
+                    : item,
+            ),
+        );
+        return storedImage;
     }, []);
+
+    const saveNodeImageLocally = useCallback(
+        async (node: CanvasNodeData) => {
+            try {
+                await storeNodeImage(node);
+                message.success("图片已保存到本地");
+            } catch (error) {
+                message.error(error instanceof Error ? error.message : "图片保存失败");
+            }
+        },
+        [message, storeNodeImage],
+    );
 
     const saveNodeAsset = useCallback(
         async (node: CanvasNodeData) => {
@@ -1586,26 +1709,30 @@ function InfiniteCanvasPage() {
                 return;
             }
             if (!node.metadata?.content) return message.error("没有可保存的图片");
-            const dataUrl = node.metadata.storageKey ? "" : node.metadata.content;
-            addAsset({
-                kind: "image",
-                title: node.metadata?.prompt?.slice(0, 24) || "画布图片",
-                coverUrl: node.metadata.content,
-                tags: [],
-                source: "Canvas",
-                data: {
-                    dataUrl,
-                    storageKey: node.metadata.storageKey,
-                    width: node.metadata.naturalWidth || node.width,
-                    height: node.metadata.naturalHeight || node.height,
-                    bytes: node.metadata.bytes || getDataUrlByteSize(dataUrl),
-                    mimeType: node.metadata.mimeType || "image/png",
-                },
-                metadata: { source: "canvas", nodeId: node.id, prompt: node.metadata?.prompt },
-            });
-            message.success("已加入我的资产");
+            try {
+                const storedImage = await storeNodeImage(node);
+                addAsset({
+                    kind: "image",
+                    title: node.metadata?.prompt?.slice(0, 24) || "画布图片",
+                    coverUrl: storedImage.url,
+                    tags: [],
+                    source: "Canvas",
+                    data: {
+                        dataUrl: "",
+                        storageKey: storedImage.storageKey,
+                        width: storedImage.width,
+                        height: storedImage.height,
+                        bytes: storedImage.bytes,
+                        mimeType: storedImage.mimeType,
+                    },
+                    metadata: { source: "canvas", nodeId: node.id, prompt: node.metadata?.prompt },
+                });
+                message.success("已加入我的资产");
+            } catch (error) {
+                message.error(error instanceof Error ? error.message : "图片保存失败");
+            }
         },
-        [addAsset, message],
+        [addAsset, message, storeNodeImage],
     );
 
     const createImageReversePromptNodes = useCallback(
@@ -1734,7 +1861,7 @@ function InfiniteCanvasPage() {
                     position: { x: node.position.x + node.width + 96, y: node.position.y },
                     width: node.width,
                     height: node.height,
-                    metadata: { prompt, status: NODE_STATUS_LOADING, ...generationMetadata },
+                    metadata: { prompt, status: NODE_STATUS_LOADING, generationStatus: "queued", ...generationMetadata },
                 },
             ]);
             setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
@@ -1743,16 +1870,52 @@ function InfiniteCanvasPage() {
             setDialogNodeId(childId);
             const controller = startGenerationRequest(childId, node.id, childId);
             try {
-                const image = await requestEdit(generationConfig, prompt, [source], { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl }, { signal: controller.signal }).then((items) => items[0]);
-                const uploaded = await uploadImage(image.dataUrl);
-                const size = fitNodeSize(uploaded.width, uploaded.height, node.width, node.height);
-                setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt, ...generationMetadata } } : item)));
+                const batch = await requestImageBatch(generationConfig, prompt, [source], {
+                    signal: controller.signal,
+                    mask: { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl },
+                    onStatus: (_index, generationStatus, detail) =>
+                        setNodes((prev) =>
+                            prev.map((item) =>
+                                item.id === childId
+                                    ? { ...item, metadata: { ...item.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } }
+                                    : item,
+                            ),
+                        ),
+                });
+                const result = batch.results[0];
+                if (!result || result.status === "rejected") throw result?.reason || new Error("接口没有返回图片");
+                const image = result.value;
+                const resolved = await canvasImageFromOutput(image);
+                const size = resolved.width && resolved.height ? fitNodeSize(resolved.width, resolved.height, node.width, node.height) : { width: node.width, height: node.height };
+                setNodes((prev) =>
+                    prev.map((item) =>
+                        item.id === childId
+                            ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized, prompt, ...generationMetadata } }
+                            : item,
+                    ),
+                );
+                if (resolved.metadata.persistenceError) message.warning(resolved.metadata.persistenceError);
             } catch (error) {
                 if (isGenerationCanceled(error)) return;
                 const errorDetails = error instanceof Error ? error.message : "局部修改失败";
                 const status = imageGenerationStatus(error);
                 status === NODE_STATUS_UNKNOWN ? message.warning(errorDetails) : message.error(errorDetails);
-                setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status, errorDetails } } : item)));
+                setNodes((prev) =>
+                    prev.map((item) =>
+                        item.id === childId
+                            ? {
+                                  ...item,
+                                  metadata: {
+                                      ...item.metadata,
+                                      status,
+                                      generationStatus: status === NODE_STATUS_UNKNOWN ? "unknown" : "failed",
+                                      failureStage: error instanceof ImageGenerationError ? error.failureStage : "provider_processing",
+                                      errorDetails,
+                                  },
+                              }
+                            : item,
+                    ),
+                );
             } finally {
                 finishGenerationRequest(childId, controller);
                 setRunningNodeId(null);
@@ -1812,7 +1975,7 @@ function InfiniteCanvasPage() {
                     position: { x: node.position.x + node.width + 96, y: node.position.y },
                     width: imageConfig.width,
                     height: imageConfig.height,
-                    metadata: { prompt, status: NODE_STATUS_LOADING, ...generationMetadata },
+                    metadata: { prompt, status: NODE_STATUS_LOADING, generationStatus: "queued", ...generationMetadata },
                 },
             ]);
             setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
@@ -1820,27 +1983,61 @@ function InfiniteCanvasPage() {
             setDialogNodeId(childId);
             const controller = startGenerationRequest(childId, node.id, childId);
             try {
-                const image = await requestEdit(
+                const batch = await requestImageBatch(
                     generationConfig,
                     prompt,
                     [{ id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey }],
-                    undefined,
-                    { signal: controller.signal },
-                ).then((items) => items[0]);
-                const uploaded = await uploadImage(image.dataUrl);
-                const size = fitNodeSize(uploaded.width, uploaded.height, imageConfig.width, imageConfig.height);
-                setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt, ...generationMetadata } } : item)));
+                    {
+                        signal: controller.signal,
+                        onStatus: (_index, generationStatus, detail) =>
+                            setNodes((prev) =>
+                                prev.map((item) =>
+                                    item.id === childId
+                                        ? { ...item, metadata: { ...item.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } }
+                                        : item,
+                                ),
+                            ),
+                    },
+                );
+                const result = batch.results[0];
+                if (!result || result.status === "rejected") throw result?.reason || new Error("接口没有返回图片");
+                const image = result.value;
+                const resolved = await canvasImageFromOutput(image);
+                const size = resolved.width && resolved.height ? fitNodeSize(resolved.width, resolved.height, imageConfig.width, imageConfig.height) : imageConfig;
+                setNodes((prev) =>
+                    prev.map((item) =>
+                        item.id === childId
+                            ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized, prompt, ...generationMetadata } }
+                            : item,
+                    ),
+                );
+                if (resolved.metadata.persistenceError) message.warning(resolved.metadata.persistenceError);
             } catch (error) {
                 if (isGenerationCanceled(error)) return;
                 const errorDetails = error instanceof Error ? error.message : "生成失败";
                 const status = imageGenerationStatus(error);
-                setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status, errorDetails } } : item)));
+                setNodes((prev) =>
+                    prev.map((item) =>
+                        item.id === childId
+                            ? {
+                                  ...item,
+                                  metadata: {
+                                      ...item.metadata,
+                                      status,
+                                      generationStatus: status === NODE_STATUS_UNKNOWN ? "unknown" : "failed",
+                                      failureStage: error instanceof ImageGenerationError ? error.failureStage : "provider_processing",
+                                      errorDetails,
+                                  },
+                              }
+                            : item,
+                    ),
+                );
             } finally {
                 finishGenerationRequest(childId, controller);
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, openConfigDialog, startGenerationRequest],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, openConfigDialog, startGenerationRequest],
     );
 
     const handleFontSizeChange = useCallback((nodeId: string, fontSize: number) => {
@@ -2001,7 +2198,13 @@ function InfiniteCanvasPage() {
                 if (!scene) return;
                 setRunningNodeId(nodeId);
                 const controller = startGenerationRequest(nodeId, nodeId, nodeId);
-                setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: scene, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
+                setNodes((prev) =>
+                    prev.map((node) =>
+                        node.id === nodeId
+                            ? { ...node, metadata: { ...node.metadata, prompt: scene, status: NODE_STATUS_LOADING, generationStatus: "queued", failureStage: undefined, errorDetails: undefined } }
+                            : node,
+                    ),
+                );
                 try {
                     const fullPrompt = (builtinPanel.promptPrefix || "") + scene;
                     // 上游图片节点作为参考图(图生图);无上游则纯文生图
@@ -2014,20 +2217,61 @@ function InfiniteCanvasPage() {
                             ? [{ id: up.id, name: `${up.title || up.id}.png`, type: up.metadata.mimeType || "image/png", dataUrl: up.metadata.content, storageKey: up.metadata.storageKey }]
                             : [],
                     );
-                    const image = refs.length
-                        ? await requestEdit({ ...generationConfig, count: "1" }, fullPrompt, refs, undefined, { signal: controller.signal }).then((items) => items[0])
-                        : await requestGeneration({ ...generationConfig, count: "1" }, fullPrompt, { signal: controller.signal }).then((items) => items[0]);
-                    const uploaded = await uploadImage(image.dataUrl);
+                    const batch = await requestImageBatch({ ...generationConfig, count: "1" }, fullPrompt, refs, {
+                        signal: controller.signal,
+                        onStatus: (_index, generationStatus, detail) =>
+                            setNodes((prev) =>
+                                prev.map((node) =>
+                                    node.id === nodeId
+                                        ? { ...node, metadata: { ...node.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } }
+                                        : node,
+                                ),
+                            ),
+                    });
+                    const result = batch.results[0];
+                    if (!result || result.status === "rejected") throw result?.reason || new Error("接口没有返回图片");
+                    const resolved = await canvasImageFromOutput(result.value);
                     setNodes((prev) =>
-                        prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...imageMetadata(uploaded), prompt: scene, model: generationConfig.model, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)),
+                        prev.map((node) =>
+                            node.id === nodeId
+                                ? {
+                                      ...node,
+                                      metadata: {
+                                          ...node.metadata,
+                                          ...resolved.metadata,
+                                          prompt: scene,
+                                          model: generationConfig.model,
+                                          optimizedReferenceCount: batch.referenceOptimization.optimized,
+                                          status: NODE_STATUS_SUCCESS,
+                                          errorDetails: undefined,
+                                      },
+                                  }
+                                : node,
+                        ),
                     );
+                    if (resolved.metadata.persistenceError) message.warning(resolved.metadata.persistenceError);
                     setDialogNodeId(null);
                 } catch (error) {
                     if (!isGenerationCanceled(error)) {
                         const errorDetails = error instanceof Error ? error.message : "生成失败";
                         const status = imageGenerationStatus(error);
                         status === NODE_STATUS_UNKNOWN ? message.warning(errorDetails) : message.error(errorDetails);
-                        setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status, errorDetails } } : node)));
+                        setNodes((prev) =>
+                            prev.map((node) =>
+                                node.id === nodeId
+                                    ? {
+                                          ...node,
+                                          metadata: {
+                                              ...node.metadata,
+                                              status,
+                                              generationStatus: status === NODE_STATUS_UNKNOWN ? "unknown" : "failed",
+                                              failureStage: error instanceof ImageGenerationError ? error.failureStage : "provider_processing",
+                                              errorDetails,
+                                          },
+                                      }
+                                    : node,
+                            ),
+                        );
                     }
                 } finally {
                     finishGenerationRequest(nodeId, controller);
@@ -2093,6 +2337,7 @@ function InfiniteCanvasPage() {
                         metadata: {
                             prompt: effectivePrompt,
                             status: NODE_STATUS_LOADING,
+                            generationStatus: "queued",
                             isBatchRoot: count > 1,
                             batchChildIds: count > 1 ? childIds : undefined,
                             batchUsesReferenceImages: referenceImages.length > 0,
@@ -2110,7 +2355,7 @@ function InfiniteCanvasPage() {
                         },
                         width: imageConfig.width,
                         height: imageConfig.height,
-                        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, batchRootId: count > 1 ? rootId : undefined, ...generationMetadata },
+                        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, generationStatus: "queued", batchRootId: count > 1 ? rootId : undefined, ...generationMetadata },
                     }));
                     const batchConnections = [...(isEmptyImageNode ? [] : [{ id: nanoid(), fromNodeId: nodeId, toNodeId: rootId }]), ...childIds.map((childId) => ({ id: nanoid(), fromNodeId: rootId, toNodeId: childId }))];
 
@@ -2160,14 +2405,35 @@ function InfiniteCanvasPage() {
                     let hasSuccess = false;
                     let hasFailure = false;
                     let hasUnknown = false;
+                    let hasPersistenceError = false;
+                    const batch = await requestImageBatch({ ...generationConfig, count: String(count) }, effectivePrompt, referenceImages, {
+                        signal: controller.signal,
+                        onStatus: (index, generationStatus, detail) => {
+                            const targetId = targetIds[index];
+                            if (!targetId) return;
+                            setNodes((prev) =>
+                                prev.map((node) =>
+                                    node.id === targetId
+                                        ? {
+                                              ...node,
+                                              metadata: {
+                                                  ...node.metadata,
+                                                  generationStatus,
+                                                  failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined,
+                                              },
+                                          }
+                                        : node,
+                                ),
+                            );
+                        },
+                    });
                     await Promise.all(
-                        targetIds.map(async (targetId) => {
+                        targetIds.map(async (targetId, index) => {
                             try {
-                                const image = referenceImages.length
-                                    ? await requestEdit({ ...generationConfig, count: "1" }, effectivePrompt, referenceImages, undefined, { signal: controller.signal }).then((items) => items[0])
-                                    : await requestGeneration({ ...generationConfig, count: "1" }, effectivePrompt, { signal: controller.signal }).then((items) => items[0]);
-                                const uploaded = await uploadImage(image.dataUrl);
-                                const imageSize = fitNodeSize(uploaded.width, uploaded.height, imageConfig.width, imageConfig.height);
+                                const result = batch.results[index];
+                                if (!result || result.status === "rejected") throw result?.reason || new Error("接口没有返回图片");
+                                const resolved = await canvasImageFromOutput(result.value);
+                                const imageSize = resolved.width && resolved.height ? fitNodeSize(resolved.width, resolved.height, imageConfig.width, imageConfig.height) : imageConfig;
                                 setNodes((prev) => {
                                     const root = prev.find((node) => node.id === rootId);
                                     return prev.map((node) => {
@@ -2176,22 +2442,23 @@ function InfiniteCanvasPage() {
                                         if (node.id === rootId && (targetId === rootId || !root?.metadata?.primaryImageId))
                                             return {
                                                 ...node,
-                                                position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
-                                                width: imageSize.width,
-                                                height: imageSize.height,
-                                                metadata: { ...node.metadata, ...imageMetadata(uploaded), primaryImageId: targetId },
-                                            };
+                                                 position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
+                                                 width: imageSize.width,
+                                                 height: imageSize.height,
+                                                 metadata: { ...node.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized, primaryImageId: targetId },
+                                             };
                                         if (node.id === targetId)
                                             return {
                                                 ...node,
-                                                position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
-                                                width: imageSize.width,
-                                                height: imageSize.height,
-                                                metadata: { ...node.metadata, ...imageMetadata(uploaded) },
-                                            };
+                                                 position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
+                                                 width: imageSize.width,
+                                                 height: imageSize.height,
+                                                 metadata: { ...node.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized },
+                                             };
                                         return node;
                                     });
                                 });
+                                if (resolved.metadata.persistenceError) hasPersistenceError = true;
                                 hasSuccess = true;
                                 if (isConfigNode) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)));
                                 return true;
@@ -2201,7 +2468,22 @@ function InfiniteCanvasPage() {
                                 const status = imageGenerationStatus(error);
                                 if (status === NODE_STATUS_UNKNOWN) hasUnknown = true;
                                 else hasFailure = true;
-                                setNodes((prev) => prev.map((node) => (node.id === targetId ? { ...node, metadata: { ...node.metadata, status, errorDetails } } : node)));
+                                setNodes((prev) =>
+                                    prev.map((node) =>
+                                        node.id === targetId
+                                            ? {
+                                                  ...node,
+                                                  metadata: {
+                                                      ...node.metadata,
+                                                      status,
+                                                      generationStatus: status === NODE_STATUS_UNKNOWN ? "unknown" : "failed",
+                                                      failureStage: error instanceof ImageGenerationError ? error.failureStage : "provider_processing",
+                                                      errorDetails,
+                                                  },
+                                              }
+                                            : node,
+                                    ),
+                                );
                             } finally {
                                 finishGenerationRequest(targetId, controller);
                             }
@@ -2215,6 +2497,7 @@ function InfiniteCanvasPage() {
                     }
                     if (hasUnknown) message.warning(IMAGE_REQUEST_UNKNOWN_MESSAGE);
                     else if (hasFailure) message.error(hasSuccess ? "部分图片生成失败" : "全部图片生成失败");
+                    else if (hasPersistenceError) message.warning("图片已生成，但部分结果未能保存到本地，请及时下载");
                     const batchStatus = hasSuccess ? NODE_STATUS_SUCCESS : hasUnknown ? NODE_STATUS_UNKNOWN : NODE_STATUS_ERROR;
                     const batchErrorDetails = hasSuccess ? undefined : hasUnknown ? IMAGE_REQUEST_UNKNOWN_MESSAGE : "全部图片生成失败";
                     setNodes((prev) =>
@@ -2446,13 +2729,42 @@ function InfiniteCanvasPage() {
                 hasSavedImageMetadata && savedImageMetadata ? await resolveMetadataReferences(savedImageMetadata) : useReferenceImages ? (context?.referenceImages.length ? context.referenceImages : sourceNodeReferenceImages(batchRoot || sourceNode)) : [];
             if (useReferenceImages && !retryReferenceImages) {
                 message.error("参考图片已丢失，无法继续重试");
-                setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: "参考图片已丢失，无法继续重试" } } : item)));
+                setNodes((prev) =>
+                    prev.map((item) =>
+                        item.id === node.id
+                            ? {
+                                  ...item,
+                                  metadata: {
+                                      ...item.metadata,
+                                      status: NODE_STATUS_ERROR,
+                                      generationStatus: node.type === CanvasNodeType.Image ? "failed" : item.metadata?.generationStatus,
+                                      failureStage: node.type === CanvasNodeType.Image ? "request_prepare" : item.metadata?.failureStage,
+                                      errorDetails: "参考图片已丢失，无法继续重试",
+                                  },
+                              }
+                            : item,
+                    ),
+                );
                 return;
             }
             const retryImages = retryReferenceImages || [];
 
             setRunningNodeId(node.id);
-            setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : item)));
+            setNodes((prev) =>
+                prev.map((item) =>
+                    item.id === node.id
+                        ? {
+                              ...item,
+                              metadata: {
+                                  ...item.metadata,
+                                  status: NODE_STATUS_LOADING,
+                                  ...(node.type === CanvasNodeType.Image ? { generationStatus: "queued" as const, failureStage: undefined } : {}),
+                                  errorDetails: undefined,
+                              },
+                          }
+                        : item,
+                ),
+            );
             const controller = startGenerationRequest(node.id, sourceNode.id, node.id);
 
             try {
@@ -2506,12 +2818,22 @@ function InfiniteCanvasPage() {
                     return;
                 }
 
-                const image = useReferenceImages
-                    ? await requestEdit(generationConfig, prompt, retryImages, undefined, { signal: controller.signal }).then((items) => items[0])
-                    : await requestGeneration(generationConfig, prompt, { signal: controller.signal }).then((items) => items[0]);
-                const uploadedImage = await uploadImage(image.dataUrl);
+                const batch = await requestImageBatch({ ...generationConfig, count: "1" }, prompt, retryImages, {
+                    signal: controller.signal,
+                    onStatus: (_index, generationStatus, detail) =>
+                        setNodes((prev) =>
+                            prev.map((item) =>
+                                item.id === node.id
+                                    ? { ...item, metadata: { ...item.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } }
+                                    : item,
+                            ),
+                        ),
+                });
+                const result = batch.results[0];
+                if (!result || result.status === "rejected") throw result?.reason || new Error("接口没有返回图片");
+                const resolved = await canvasImageFromOutput(result.value);
                 const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
-                const imageSize = fitNodeSize(uploadedImage.width, uploadedImage.height, imageConfig.width, imageConfig.height);
+                const imageSize = resolved.width && resolved.height ? fitNodeSize(resolved.width, resolved.height, imageConfig.width, imageConfig.height) : { width: node.width, height: node.height };
                 const generationMetadata = savedImageMetadata?.generationType
                     ? {
                           generationType: savedImageMetadata.generationType,
@@ -2531,17 +2853,37 @@ function InfiniteCanvasPage() {
                                   type: CanvasNodeType.Image,
                                   width: imageSize.width,
                                   height: imageSize.height,
-                                  metadata: { ...item.metadata, ...imageMetadata(uploadedImage), prompt, ...generationMetadata },
+                                  metadata: { ...item.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized, prompt, ...generationMetadata },
                               }
                             : item,
                     ),
                 );
+                if (resolved.metadata.persistenceError) message.warning(resolved.metadata.persistenceError);
             } catch (error) {
                 if (isGenerationCanceled(error)) return;
                 const errorDetails = error instanceof Error ? error.message : "生成失败";
                 const status = imageGenerationStatus(error);
                 status === NODE_STATUS_UNKNOWN ? message.warning(errorDetails) : message.error(errorDetails);
-                setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status, errorDetails } } : item)));
+                setNodes((prev) =>
+                    prev.map((item) =>
+                        item.id === node.id
+                            ? {
+                                  ...item,
+                                  metadata: {
+                                      ...item.metadata,
+                                      status,
+                                      ...(node.type === CanvasNodeType.Image
+                                          ? {
+                                                generationStatus: status === NODE_STATUS_UNKNOWN ? ("unknown" as const) : ("failed" as const),
+                                                failureStage: error instanceof ImageGenerationError ? error.failureStage : ("provider_processing" as const),
+                                            }
+                                          : {}),
+                                      errorDetails,
+                                  },
+                              }
+                            : item,
+                    ),
+                );
             } finally {
                 finishGenerationRequest(node.id, controller);
                 setRunningNodeId(null);
@@ -2889,6 +3231,7 @@ function InfiniteCanvasPage() {
                     onGenerateImage={generateImageFromTextNode}
                     onUpload={(node) => handleUploadRequest(node.id)}
                     onDownload={downloadNodeImage}
+                    onSaveLocal={(node) => void saveNodeImageLocally(node)}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
                     onMaskEdit={(node) => setMaskEditNodeId(node.id)}
                     onCrop={(node) => setCropNodeId(node.id)}

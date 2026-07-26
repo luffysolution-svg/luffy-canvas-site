@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { App, Modal, Segmented, Tooltip } from "antd";
-import { Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, MessageSquare, Minus, Music2, Pencil, Plus, RefreshCw, Settings2, Trash2, Upload, Video } from "lucide-react";
+import { Copy, Download, Ellipsis, ExternalLink, FolderPlus, Image as ImageIcon, Info, MessageSquare, Minus, Music2, Pencil, Plus, RefreshCw, Save, Settings2, Trash2, Upload, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, getDataUrlByteSize } from "@/lib/image-utils";
@@ -24,6 +24,7 @@ type CanvasNodeHoverToolbarProps = {
     onGenerateImage: (node: CanvasNodeData) => void;
     onUpload: (node: CanvasNodeData) => void;
     onDownload: (node: CanvasNodeData) => void;
+    onSaveLocal: (node: CanvasNodeData) => void;
     onSaveAsset: (node: CanvasNodeData) => void;
     onMaskEdit: (node: CanvasNodeData) => void;
     onCrop: (node: CanvasNodeData) => void;
@@ -62,6 +63,7 @@ export function CanvasNodeHoverToolbar({
     onGenerateImage,
     onUpload,
     onDownload,
+    onSaveLocal,
     onSaveAsset,
     onMaskEdit,
     onCrop,
@@ -126,6 +128,14 @@ export function CanvasNodeHoverToolbar({
         copyText(prompt, "提示词已复制");
     };
     const imageTools = buildImageToolbarTools(node, { onUpload, onToggleFreeResize, onMaskEdit, onCrop, onSplit, onUpscale, onSuperResolve, onAngle, onViewImage, onCopyPrompt: copyImagePrompt, onReversePrompt });
+    const remoteImageTools: ToolbarTool[] =
+        hasImage && node.metadata?.remoteUrl
+            ? [
+                  { id: "openRemote", title: "打开远程原图", label: "原图", icon: <ExternalLink className="size-4" />, onClick: () => window.open(node.metadata?.remoteUrl, "_blank", "noopener,noreferrer") },
+                  { id: "copyRemote", title: "复制远程图片链接", label: "复制链接", icon: <Copy className="size-4" />, onClick: () => copyText(node.metadata?.remoteUrl || "", "图片链接已复制") },
+                  ...(!node.metadata.storageKey ? [{ id: "saveLocal", title: "保存到浏览器本地", label: "存本地", icon: <Save className="size-4" />, onClick: () => onSaveLocal(node) }] : []),
+              ]
+            : [];
 
     function openImageToolSettings() {
         onKeep(activeNode.id);
@@ -153,7 +163,7 @@ export function CanvasNodeHoverToolbar({
         ...(isAudio ? [{ id: "uploadAudio", title: hasAudio ? "替换音频" : "上传音频", label: hasAudio ? "替换音频" : "上传音频", icon: <Music2 className="size-4" />, onClick: () => onUpload(node) }] : []),
         ...(hasImage ? imageTools.map((tool) => ({ id: tool.id, title: tool.title, label: tool.label, icon: tool.icon, active: tool.active, onClick: tool.onClick })) : []),
     ];
-    const toolbarTools = hasImage ? [...baseToolbarTools, ...nodeToolbarTools].filter((tool) => quickImageToolIdSet.has(tool.id as ImageQuickToolId)) : [...baseToolbarTools, ...nodeToolbarTools, ...extraTools];
+    const toolbarTools = hasImage ? [...baseToolbarTools, ...nodeToolbarTools].filter((tool) => quickImageToolIdSet.has(tool.id as ImageQuickToolId)).concat(remoteImageTools) : [...baseToolbarTools, ...nodeToolbarTools, ...extraTools];
     const selectableImageToolbarTools = [...baseToolbarTools, ...nodeToolbarTools].filter((tool) => tool.id !== "retry") as ImageToolbarSettingsTool[];
 
     const closeImageToolSettings = () => {

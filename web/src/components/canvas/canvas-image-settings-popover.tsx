@@ -10,7 +10,7 @@ import type { AiConfig } from "@/stores/use-config-store";
 
 type CanvasImageSettingsPopoverProps = {
     config: AiConfig;
-    onConfigChange: (key: keyof AiConfig, value: string) => void;
+    onConfigChange: <K extends "quality" | "size" | "count" | "background" | "optimizeImageReferences">(key: K, value: AiConfig[K]) => void;
     onMissingConfig?: () => void;
     onOpenChange?: (open: boolean) => void;
     buttonClassName?: string;
@@ -85,7 +85,7 @@ function ImageSettingsPortal({
     placement: CanvasImageSettingsPopoverProps["placement"];
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     config: AiConfig;
-    onConfigChange: (key: keyof AiConfig, value: string) => void;
+    onConfigChange: CanvasImageSettingsPopoverProps["onConfigChange"];
 }) {
     const width = 356;
     const gap = 8;

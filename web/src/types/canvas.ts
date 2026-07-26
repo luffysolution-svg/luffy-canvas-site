@@ -1,3 +1,5 @@
+import type { ImageFailureStage, ImageGenerationStatus } from "./image";
+
 export type Position = {
     x: number;
     y: number;
@@ -30,7 +32,10 @@ export type CanvasNodeMetadata = {
     composerContent?: string;
     prompt?: string;
     status?: CanvasNodeStatus;
+    generationStatus?: ImageGenerationStatus;
+    failureStage?: ImageFailureStage;
     errorDetails?: string;
+    persistenceError?: string;
     fontSize?: number;
     generationMode?: CanvasGenerationMode;
     generationType?: CanvasImageGenerationType;
@@ -38,6 +43,7 @@ export type CanvasNodeMetadata = {
     size?: string;
     quality?: string;
     background?: string;
+    optimizeImageReferences?: boolean;
     count?: number;
     seconds?: string;
     vquality?: string;
@@ -59,6 +65,11 @@ export type CanvasNodeMetadata = {
     primaryImageId?: string;
     imageBatchExpanded?: boolean;
     storageKey?: string;
+    remoteUrl?: string;
+    expiresAt?: number;
+    providerTaskId?: string;
+    providerRequestId?: string;
+    optimizedReferenceCount?: number;
     mimeType?: string;
     bytes?: number;
     durationMs?: number;

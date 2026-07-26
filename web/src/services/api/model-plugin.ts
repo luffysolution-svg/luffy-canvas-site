@@ -168,9 +168,8 @@ export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<
     } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") throw error;
         if (axios.isCancel(error)) throw error;
-        const isNetworkError = (axios.isAxiosError(error) && !error.response) || (error instanceof TypeError && /fetch|network|load failed/i.test(error.message));
-        const message = isNetworkError ? "无法连接接口，请检查 Base URL、网络连接，以及服务是否允许浏览器跨域（CORS）请求" : error instanceof Error ? error.message : String(error);
-        throw new Error(`模型调用脚本执行失败：${message}`);
+        if (axios.isAxiosError(error) || (error instanceof TypeError && /fetch|network|load failed/i.test(error.message))) throw error;
+        throw new Error(`模型调用脚本执行失败：${error instanceof Error ? error.message : String(error)}`);
     }
 }
 
@@ -199,7 +198,7 @@ export const PLUGIN_VARIABLES: PluginVariable[] = [
 ];
 
 export const PLUGIN_RETURNS: Record<ModelCapability, string> = {
-    image: "文生图（images 为空）和图生图（images 有参考图）接口不同，脚本需自行区分；返回图片 URL 或 dataURL 字符串，也可返回它们的数组，或 [{ dataUrl }] / [{ url }] / [{ b64_json }]",
+    image: "文生图（images 为空）和图生图（images 有参考图）接口不同，脚本需自行区分；返回图片 URL 或 dataURL 字符串，也可返回它们的数组，或包含 url/dataUrl/b64_json、expiresAt、providerTaskId、providerRequestId 的对象数组",
     video: "脚本内部完成轮询，返回 { url } 或 { blob } 或视频 URL 字符串",
     audio: "返回 Blob，或 base64 / dataURL 字符串，或 { b64_json } / { data } / { url }",
     text: "用 onDelta(text) 推送流式，最终 return 完整文本字符串",
@@ -212,16 +211,21 @@ export const PLUGIN_TEMPLATES: Record<ModelCapability, PluginTemplate[]> = {
         {
             label: "OpenAI 规范",
             script: `// 生图 / 改图：两者接口不同，用 images 是否为空来区分。
-// 可用：prompt、images(dataURL[])、params{size,quality,count}、model、baseUrl、apiKey
+// 可用：prompt、images(dataURL[])、params{size,quality,count,responseFormat}、model、baseUrl、apiKey
 if (images.length === 0) {
   // 文生图：/images/generations（JSON）
   const data = await request({
     method: "post",
     url: \`\${baseUrl}/v1/images/generations\`,
     headers: { "Content-Type": "application/json", ...(authType === "none" ? {} : { Authorization: \`Bearer \${apiKey}\` }) },
-    data: { model, prompt, n: params.count, size: params.size, response_format: "b64_json" },
+    data: { model, prompt, n: params.count, size: params.size, response_format: params.responseFormat || "b64_json" },
   });
-  return (data.data || []).map((item) => !item.b64_json ? item.url : item.b64_json.startsWith("data:") ? item.b64_json : \`data:image/png;base64,\${item.b64_json}\`);
+  return (data.data || []).map((item) => ({
+    ...item,
+    expiresAt: item.expiresAt || item.expires_at || data.expiresAt || data.expires_at,
+    providerTaskId: item.providerTaskId || item.taskId || item.task_id || data.taskId || data.task_id,
+    providerRequestId: item.providerRequestId || item.requestId || item.request_id || data.requestId || data.request_id,
+  }));
 }
 
 // 图生图：/images/edits（multipart/form-data，参考图作为文件上传）
@@ -229,7 +233,7 @@ const form = new FormData();
 form.set("model", model);
 form.set("prompt", prompt);
 form.set("n", String(params.count));
-form.set("response_format", "b64_json");
+form.set("response_format", params.responseFormat || "b64_json");
 for (const dataUrl of images) {
   form.append("image", await (await fetch(dataUrl)).blob(), "ref.png");
 }
@@ -240,7 +244,12 @@ const edited = await request({
   headers: authType === "none" ? {} : { Authorization: \`Bearer \${apiKey}\` }, // 不要手动设 Content-Type，交给浏览器带 boundary
   data: form,
 });
-return (edited.data || []).map((item) => !item.b64_json ? item.url : item.b64_json.startsWith("data:") ? item.b64_json : \`data:image/png;base64,\${item.b64_json}\`);`,
+return (edited.data || []).map((item) => ({
+  ...item,
+  expiresAt: item.expiresAt || item.expires_at || edited.expiresAt || edited.expires_at,
+  providerTaskId: item.providerTaskId || item.taskId || item.task_id || edited.taskId || edited.task_id,
+  providerRequestId: item.providerRequestId || item.requestId || item.request_id || edited.requestId || edited.request_id,
+}));`,
         },
         {
             label: "Gemini 规范",
@@ -377,21 +386,41 @@ return text;`,
     ],
 };
 
-/** Normalize whatever an image script returns into the app's generated-image shape. */
-export function normalizePluginImages(result: unknown): string[] {
+export type NormalizedPluginImage = {
+    value: string;
+    mimeType?: string;
+    expiresAt?: unknown;
+    providerTaskId?: string;
+    providerRequestId?: string;
+};
+
+/** Normalize whatever an image script returns without discarding provider metadata. */
+export function normalizePluginImages(result: unknown): NormalizedPluginImage[] {
     const items = Array.isArray(result) ? result : [result];
-    const urls = items
-        .map((item) => {
-            if (typeof item === "string") return item;
+    const images = items
+        .map((item): NormalizedPluginImage | null => {
+            if (typeof item === "string") return { value: item };
             if (item && typeof item === "object") {
                 const record = item as Record<string, unknown>;
-                if (typeof record.dataUrl === "string") return record.dataUrl;
-                if (typeof record.url === "string") return record.url;
-                if (typeof record.b64_json === "string") return record.b64_json.startsWith("data:") ? record.b64_json : `data:image/png;base64,${record.b64_json}`;
+                const rawValue = typeof record.url === "string" ? record.url : typeof record.dataUrl === "string" ? record.dataUrl : typeof record.b64_json === "string" ? record.b64_json : "";
+                if (!rawValue) return null;
+                const mimeType = typeof record.mimeType === "string" ? record.mimeType : typeof record.mime_type === "string" ? record.mime_type : undefined;
+                const value = rawValue === record.b64_json && !rawValue.startsWith("data:") ? `data:${mimeType || "image/png"};base64,${rawValue}` : rawValue;
+                return {
+                    value,
+                    mimeType,
+                    expiresAt: record.expiresAt ?? record.expires_at,
+                    providerTaskId: stringValue(record.providerTaskId ?? record.taskId ?? record.task_id),
+                    providerRequestId: stringValue(record.providerRequestId ?? record.requestId ?? record.request_id),
+                };
             }
-            return "";
+            return null;
         })
-        .filter(Boolean);
-    if (!urls.length) throw new Error("模型调用脚本没有返回图片");
-    return urls;
+        .filter((item): item is NormalizedPluginImage => Boolean(item));
+    if (!images.length) throw new Error("模型调用脚本没有返回图片");
+    return images;
+}
+
+function stringValue(value: unknown) {
+    return typeof value === "string" && value ? value : undefined;
 }

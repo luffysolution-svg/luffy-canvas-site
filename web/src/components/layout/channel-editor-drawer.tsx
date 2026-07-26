@@ -3,7 +3,21 @@ import { Code2, ListPlus, Trash2, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { fetchChannelModels } from "@/services/api/image";
-import { channelProviderPreset, channelProviderPresets, defaultBaseUrlForApiFormat, guessCapabilities, normalizeChannelModels, type ApiCallFormat, type ChannelAuthType, type ChannelModel, type ChannelProvider, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import {
+    channelProviderPreset,
+    channelProviderPresets,
+    defaultBaseUrlForApiFormat,
+    guessCapabilities,
+    normalizeChannelModels,
+    type ApiCallFormat,
+    type ChannelAuthType,
+    type ChannelModel,
+    type ChannelProvider,
+    type ImageBatchMode,
+    type ImageResponseFormat,
+    type ModelCapability,
+    type ModelChannel,
+} from "@/stores/use-config-store";
 import { ModelScriptEditor } from "./model-script-editor";
 import { ModelSelectModal } from "./model-select-modal";
 
@@ -11,6 +25,18 @@ const apiFormatOptions: Array<{ label: string; value: ApiCallFormat }> = [
     { label: "OpenAI", value: "openai" },
     { label: "Gemini", value: "gemini" },
     { label: "Qwen / DashScope", value: "qwen" },
+];
+
+const imageResponseFormatOptions: Array<{ label: string; value: ImageResponseFormat }> = [
+    { label: "自动判断", value: "auto" },
+    { label: "远程链接（URL）", value: "url" },
+    { label: "Base64（b64_json）", value: "b64_json" },
+];
+
+const imageBatchModeOptions: Array<{ label: string; value: ImageBatchMode }> = [
+    { label: "自动判断", value: "auto" },
+    { label: "原生批量（n）", value: "native" },
+    { label: "拆分请求", value: "split" },
 ];
 
 const capabilityOptions: Array<{ label: string; value: ModelCapability }> = [
@@ -42,7 +68,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
         if (provider === draft.provider) return;
         const nextPreset = channelProviderPreset(provider);
         if (provider === "custom") {
-            patch({ provider });
+            patch({ provider, imageResponseFormat: nextPreset.imageResponseFormat, imageBatchMode: nextPreset.imageBatchMode });
             return;
         }
         patch({
@@ -51,13 +77,16 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
             authType: nextPreset.authType,
             baseUrl: nextPreset.baseUrl,
             apiKey: "",
+            imageResponseFormat: nextPreset.imageResponseFormat,
+            imageBatchMode: nextPreset.imageBatchMode,
             models: normalizeChannelModels(nextPreset.models),
         });
     };
 
     const changeApiFormat = (apiFormat: ApiCallFormat) => {
         const baseUrl = !draft.baseUrl.trim() || draft.baseUrl.trim() === defaultBaseUrlForApiFormat(draft.apiFormat) ? defaultBaseUrlForApiFormat(apiFormat) : draft.baseUrl;
-        patch({ apiFormat, baseUrl, provider: "custom" });
+        const customPreset = channelProviderPreset("custom");
+        patch({ apiFormat, baseUrl, provider: "custom", imageResponseFormat: customPreset.imageResponseFormat, imageBatchMode: customPreset.imageBatchMode });
     };
 
     const applySelection = (names: string[]) => {
@@ -124,10 +153,20 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     <span className="mb-1 block text-sm font-medium">渠道名称</span>
                     <Input value={draft.name} onChange={(event) => patch({ name: event.target.value })} />
                 </label>
-                <label className="block">
-                    <span className="mb-1 block text-sm font-medium">协议</span>
-                    <Select className="w-full" value={draft.apiFormat} options={apiFormatOptions} onChange={changeApiFormat} />
-                </label>
+                <div className="grid gap-4 md:col-span-2 md:grid-cols-3">
+                    <label className="block">
+                        <span className="mb-1 block text-sm font-medium">协议</span>
+                        <Select className="w-full" value={draft.apiFormat} options={apiFormatOptions} onChange={changeApiFormat} />
+                    </label>
+                    <label className="block">
+                        <span className="mb-1 block text-sm font-medium">图片返回格式</span>
+                        <Select className="w-full" value={draft.imageResponseFormat} options={imageResponseFormatOptions} onChange={(imageResponseFormat) => patch({ imageResponseFormat })} />
+                    </label>
+                    <label className="block">
+                        <span className="mb-1 block text-sm font-medium">图片批量模式</span>
+                        <Select className="w-full" value={draft.imageBatchMode} options={imageBatchModeOptions} onChange={(imageBatchMode) => patch({ imageBatchMode })} />
+                    </label>
+                </div>
                 <label className="block md:col-span-2">
                     <span className="mb-1 block text-sm font-medium">接口地址</span>
                     <Input value={draft.baseUrl} onChange={(event) => patch({ baseUrl: event.target.value })} placeholder={draft.apiFormat === "qwen" ? "https://dashscope.aliyuncs.com" : "https://api.example.com"} />
