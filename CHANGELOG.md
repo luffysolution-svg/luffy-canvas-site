@@ -2,6 +2,13 @@
 
 ## Unreleased
 
++ [调整] Canvas Agent、MCP 与 Codex 插件统一迁移到 Luffy Canvas 自有命名，并提供旧插件、MCP 和本地配置的一次性迁移说明。
++ [新增] 新增 `open-luffy-canvas`、`operate-luffy-canvas` Skills，以及 Codex、Claude Code、WorkBuddy 和标准 MCP 接入文档。
++ [新增] MCP 增加分级权限 Profile，网页 Agent 改用短期配对与可撤销会话，并扩展 Codex、Claude Code 多 Provider 接入。
++ [修复] 自动连接不再关闭写操作确认，长期 token 不再作为默认方式出现在 URL 或浏览器永久存储中。
++ [修复] MCP 读写结果统一移除媒体签名地址、浏览器存储键和 Base64 内容，并在 Agent 退出时回收审批租约与 Provider 子进程。
++ [优化] Canvas Agent npm 发布流程增加测试、构建、包内容检查和严格的版本存在性判断。
+
 ## v0.10.0 - 2026-07-26
 
 + [修复] 远程图片直连受 CORS 拦截时改由受限的同源流式代理下载，使下载、保存到本地、添加到资产和加入参考图可继续使用。

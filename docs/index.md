@@ -1,4 +1,4 @@
-# luffy-canvas-site 文档索引
+# Luffy Canvas 文档索引
 
 ## 项目介绍
 
@@ -12,6 +12,13 @@
 
 - [画布节点操作手册](/docs/canvas/canvas-node-manual)
 - [画布快捷键](/docs/canvas/canvas-shortcuts)
+
+## Agent 与 MCP 集成
+
+- [MCP 接入](/docs/integrations/mcp)
+- [Codex](/docs/integrations/codex)
+- [Claude Code](/docs/integrations/claude-code)
+- [WorkBuddy](/docs/integrations/workbuddy)
 
 ## 开发与数据
 

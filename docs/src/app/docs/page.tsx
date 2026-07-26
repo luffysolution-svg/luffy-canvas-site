@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import type { Metadata } from 'next';
 import { getMDXComponents } from '@/components/mdx';
 
-const title = 'luffy-canvas-site 文档';
+const title = 'Luffy Canvas 文档';
 const description = '功能说明、操作手册、部署方式与开发文档';
 
 async function readDocsIndex() {

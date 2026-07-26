@@ -1,0 +1,89 @@
+---
+title: MCP 接入
+description: 配置 Luffy Canvas MCP、权限 Profile、安全配对和旧名称迁移
+---
+
+# MCP 接入
+
+Luffy Canvas Agent 同时提供两个不同入口：
+
+```text
+普通进程  -> HTTP/SSE 本地 Agent -> 网页配对与画布连接
+mcp 进程 -> stdio MCP Server    -> Codex、Claude Code、WorkBuddy 等客户端
+```
+
+单独运行其中一个不能完成完整网页控制链路。MCP 使用标准 `@modelcontextprotocol/sdk` 和 stdio transport，不依赖 Codex 私有协议。
+
+## npm 发布后的标准配置
+
+```json
+{
+  "mcpServers": {
+    "luffy-canvas": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@luffysolution/canvas-agent@0.2.0",
+        "mcp",
+        "--profile",
+        "editor"
+      ],
+      "startup_timeout_sec": 20,
+      "tool_timeout_sec": 180
+    }
+  }
+}
+```
+
+只有 npm registry 已确认目标版本归本项目维护者所有时才使用上述 `npx` 配置。否则使用当前仓库构建产物，不要回退到上游包：
+
+```bash
+cd canvas-agent
+npm ci
+npm test
+npm run build
+node /absolute/path/to/luffy-canvas-site/canvas-agent/dist/index.js mcp --profile editor
+```
+
+## 权限 Profile
+
+通过 `--profile` 或环境变量 `LUFFY_CANVAS_MCP_PROFILE` 选择权限，默认是 `editor`。
+
+| Profile | 范围 |
+| --- | --- |
+| `readonly` | 页面导航、画布与选区读取、快照、任务状态、工作台配置、提示词和素材读取 |
+| `editor` | `readonly` 加节点创建、更新、移动、缩放、删除、连接、选择、视口和批量画布操作 |
+| `generator` | `readonly` 加文本、图片、视频、音频和工作台生成 |
+| `assets` | 素材读取/写入和附件节点创建 |
+| `full` | 全部工具 |
+
+`editor` 不得通过 `autoRun` 或 `run_generation` 绕过生成权限。Profile 只控制 MCP 暴露和输入权限；网页仍独立确认修改、删除、生成、附件和素材写入。
+
+## 安全配对
+
+1. 普通 Agent 默认只监听 `127.0.0.1`，启动时输出短期、一次性 pairing code。
+2. 网页向本地 Agent `POST /pair`，换取可过期、可撤销的 session token。
+3. 后续请求使用授权 Header；token 不放进 URL、Referrer 或运行日志。
+4. 网页刷新只在当前浏览器会话中恢复 session，不把长期 token 写进 `localStorage`。
+5. 配对只建立连接，不修改网页写操作审批策略。
+
+原生 `EventSource` 无法方便地附加授权 Header，因此本项目使用支持 Header 的 fetch stream，不把 ticket 或 token 放进 URL。
+
+## 配置目录迁移
+
+新配置位于：
+
+```text
+~/.luffy-canvas/agent.json
+```
+
+首次启动且新配置不存在时，Agent 会读取旧的 `~/.infinite-canvas/` 配置，迁移 URL、端口、Origin、工作空间和会话索引等非敏感数据。旧永久 token 不迁移，不再写旧目录，也不会删除旧目录。迁移完成会输出不含密钥的提示。
+
+## 从旧 MCP 迁移
+
+```bash
+codex mcp remove infinite-canvas
+codex plugin remove infinite-canvas
+```
+
+新的 Server ID 是 `luffy-canvas`，Claude Code 工具前缀是 `mcp__luffy-canvas__*`。

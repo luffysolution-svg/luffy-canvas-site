@@ -1,4 +1,4 @@
-export const appName = 'luffy-canvas-site';
+export const appName = 'Luffy Canvas';
 export const docsRoute = '/docs';
 export const docsContentRoute = '/llms.mdx/docs';
 
