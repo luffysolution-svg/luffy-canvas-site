@@ -73,13 +73,24 @@ export function initAnalytics() {
 export function trackPageview(path: string) {
     try {
         if (active.ga4 && window.gtag) {
-            window.gtag("event", "page_view", { page_path: path, page_location: window.location.href });
+            window.gtag("event", "page_view", { page_path: scrubAgentCredentials(path), page_location: scrubAgentCredentials(window.location.href) });
         }
         if (active.baidu && window._hmt) {
-            window._hmt.push(["_trackPageview", path]);
+            window._hmt.push(["_trackPageview", scrubAgentCredentials(path)]);
         }
     } catch {
         /* 忽略 */
     }
 }
 
+function scrubAgentCredentials(value: string) {
+    try {
+        const absolute = /^[a-z][a-z\d+.-]*:/i.test(value);
+        const url = new URL(value, window.location.origin);
+        url.searchParams.delete("agentUrl");
+        url.searchParams.delete("agentToken");
+        return absolute ? url.toString() : `${url.pathname}${url.search}${url.hash}`;
+    } catch {
+        return value.replace(/([?&])(agentUrl|agentToken)=[^&#]*/g, "$1").replace(/[?&]$/, "");
+    }
+}

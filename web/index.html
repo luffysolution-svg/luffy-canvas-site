@@ -2,10 +2,33 @@
 <html lang="zh-CN" class="font-sans">
     <head>
         <meta charset="UTF-8" />
+        <meta name="referrer" content="no-referrer" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <meta name="description" content="luffy-canvas-site AI 画布创作工具" />
+        <meta name="description" content="Luffy Canvas AI 画布创作工具" />
         <link rel="icon" href="/logo.svg" />
-        <title>luffy-canvas-site</title>
+        <title>Luffy Canvas</title>
+        <script>
+            try {
+                var legacyUrl = new URL(window.location.href);
+                var legacyEndpoint = legacyUrl.searchParams.get("agentUrl") || "";
+                var legacyToken = (legacyUrl.searchParams.get("agentToken") || "").trim();
+                if (legacyUrl.searchParams.has("agentUrl") || legacyUrl.searchParams.has("agentToken")) {
+                    var migration = { deprecated: true };
+                    if (legacyEndpoint) {
+                        try {
+                            var parsedEndpoint = new URL(legacyEndpoint);
+                            var loopback = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsedEndpoint.hostname);
+                            var originOnly = legacyEndpoint.replace(/\/+$/, "") === parsedEndpoint.origin;
+                            if (loopback && originOnly && ["http:", "https:"].includes(parsedEndpoint.protocol)) migration = { endpoint: parsedEndpoint.origin, token: legacyToken, deprecated: true };
+                        } catch (e) {}
+                    }
+                    sessionStorage.setItem("luffy-canvas-agent-query-migration:v1", JSON.stringify(migration));
+                    legacyUrl.searchParams.delete("agentUrl");
+                    legacyUrl.searchParams.delete("agentToken");
+                    history.replaceState(history.state, "", legacyUrl.pathname + legacyUrl.search + legacyUrl.hash);
+                }
+            } catch (e) {}
+        </script>
         <script>
             try {
                 var s = JSON.parse(localStorage.getItem("infinite-canvas:theme_store") || "{}");

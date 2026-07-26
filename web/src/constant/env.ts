@@ -1,6 +1,6 @@
 export const APP_VERSION = __APP_VERSION__ || "dev";
 
-export const PROJECT_NAME = "luffy-canvas-site";
+export const PROJECT_NAME = "Luffy Canvas";
 export const PROJECT_REPOSITORY_URL = import.meta.env.VITE_REPOSITORY_URL || "https://github.com/luffysolution-svg/luffy-canvas-site";
 export const UPSTREAM_REPOSITORY_URL = "https://github.com/basketikun/infinite-canvas";
 export const DOCS_URL = import.meta.env.VITE_DOC_URL || `${PROJECT_REPOSITORY_URL}/tree/main/docs`;

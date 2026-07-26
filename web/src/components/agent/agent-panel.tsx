@@ -1,12 +1,13 @@
 import { useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Bot, PanelRightClose } from "lucide-react";
-import { Button, Switch, Tooltip } from "antd";
+import { Button, Select, Tooltip } from "antd";
 import { motion } from "motion/react";
 
 import { CanvasLocalAgentPanel } from "@/components/canvas/canvas-local-agent-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { CANVAS_AGENT_PANEL_MOTION_MS, useAgentStore } from "@/stores/use-agent-store";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { AGENT_APPROVAL_MODE_OPTIONS, type AgentApprovalMode } from "@/lib/agent/agent-permissions";
 
 const PANEL_MOTION_SECONDS = CANVAS_AGENT_PANEL_MOTION_MS / 1000;
 
@@ -17,10 +18,13 @@ export function AgentPanel() {
     const panelMounted = useAgentStore((state) => state.panelMounted);
     const panelOpen = useAgentStore((state) => state.panelOpen);
     const panelClosing = useAgentStore((state) => state.panelClosing);
-    const confirmTools = useAgentStore((state) => state.confirmTools);
+    const approvalMode = useAgentStore((state) => state.approvalMode);
+    const agentId = useAgentStore((state) => state.agentId);
+    const provider = useAgentStore((state) => state.provider);
+    const providers = useAgentStore((state) => state.providers);
     const setAgentState = useAgentStore((state) => state.setAgentState);
+    const setApprovalMode = useAgentStore((state) => state.setApprovalMode);
     const closePanel = useAgentStore((state) => state.closePanel);
-
 
     const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
         event.preventDefault();
@@ -43,6 +47,7 @@ export function AgentPanel() {
     };
 
     if (!panelMounted) return null;
+    const providerName = providers.find((item) => item.id === provider)?.displayName || (provider === "claude-code" ? "Claude Code" : "Codex");
 
     return (
         <motion.div
@@ -67,14 +72,21 @@ export function AgentPanel() {
                         </span>
                         <div className="min-w-0">
                             <div className="text-base font-semibold leading-5">Agent</div>
-                            <div className="truncate text-xs" style={{ color: theme.node.muted }}>全站助手</div>
+                            <div className="truncate text-xs" style={{ color: theme.node.muted }}>
+                                {providerName}
+                            </div>
                         </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                        <label className="flex items-center gap-1.5 text-xs" style={{ color: theme.node.muted }}>
-                            <Switch size="small" checked={confirmTools} onChange={(confirmTools) => setAgentState({ confirmTools })} />
-                            工具确认
-                        </label>
+                        <Tooltip title="网页侧审批独立于 MCP 客户端审批">
+                            <Select
+                                size="small"
+                                value={approvalMode}
+                                className="w-40"
+                                options={AGENT_APPROVAL_MODE_OPTIONS.map((item) => ({ ...item, disabled: item.value === "always-agent" && !agentId }))}
+                                onChange={(value) => setApprovalMode(value as AgentApprovalMode)}
+                            />
+                        </Tooltip>
                         <Tooltip title="收起对话">
                             <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" style={{ color: theme.node.muted }} icon={<PanelRightClose className="size-4" />} onClick={closePanel} />
                         </Tooltip>
