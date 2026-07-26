@@ -23,6 +23,109 @@ test("MCP 读取当前激活网页的画布", async (t) => {
     assert.equal(field(await session.callTool("canvas_get_state", {}), "projectId"), "canvas-second");
 });
 
+test("MCP snapshots omit client and storage metadata and bound large strings", async (t) => {
+    const session = new CanvasSession();
+    const first = connect(session, "first");
+    t.after(() => first.close());
+    session.updateState(
+        {
+            ...snapshot("canvas-first"),
+            clientId: "browser-secret",
+            nodes: [
+                {
+                    id: "node-1",
+                    type: "text",
+                    title: "Prompt",
+                    position: { x: 0, y: 0 },
+                    width: 320,
+                    height: 200,
+                    metadata: { content: "x".repeat(3000), remoteUrl: "https://storage.example/file?signature=secret", storageKey: "private-key" },
+                },
+                {
+                    id: "node-2",
+                    type: "image",
+                    title: "Result",
+                    position: { x: 400, y: 0 },
+                    width: 320,
+                    height: 200,
+                    metadata: { content: "https://storage.example/file?signature=secret", remoteUrl: "https://storage.example/file?signature=secret", storageKey: "private-key" },
+                },
+                {
+                    id: "node-3",
+                    type: "panorama:viewer",
+                    title: "Panorama",
+                    position: { x: 800, y: 0 },
+                    width: 320,
+                    height: 200,
+                    metadata: { content: "data:image/jpeg;base64,secret" },
+                },
+            ],
+        },
+        "first",
+    );
+
+    const state = (await session.callTool("canvas_get_state", {})) as Record<string, unknown>;
+    const node = (state.nodes as Array<Record<string, unknown>>)[0];
+    const metadata = node.metadata as Record<string, unknown>;
+    const mediaMetadata = ((state.nodes as Array<Record<string, unknown>>)[1].metadata || {}) as Record<string, unknown>;
+    const pluginMetadata = ((state.nodes as Array<Record<string, unknown>>)[2].metadata || {}) as Record<string, unknown>;
+    assert.equal("clientId" in state, false);
+    assert.equal("remoteUrl" in metadata, false);
+    assert.equal("storageKey" in metadata, false);
+    assert.equal(String(metadata.content).length, 2001);
+    assert.equal("content" in mediaMetadata, false);
+    assert.equal(mediaMetadata.contentAvailable, true);
+    assert.equal("content" in pluginMetadata, false);
+    assert.equal(pluginMetadata.contentAvailable, true);
+});
+
+test("write results are compacted before they return to MCP", async (t) => {
+    const session = new CanvasSession();
+    const first = connect(session, "first");
+    t.after(() => first.close());
+    session.updateState(snapshot("canvas-first"), "first");
+
+    const result = session.callTool("canvas_create_text_node", { text: "safe" });
+    const call = first.event("tool_call");
+    session.resolveResult("first", {
+        requestId: String(field(call, "requestId")),
+        result: {
+            ...snapshot("canvas-first"),
+            clientId: "browser-secret",
+            secret: "root-secret",
+            viewport: { x: 1, y: 2, k: 3, token: "nested-secret" },
+            nodes: [
+                {
+                    id: "node-1",
+                    type: "image",
+                    title: "Result",
+                    position: { x: 0, y: 0, token: "nested-secret" },
+                    width: 320,
+                    height: 200,
+                    metadata: {
+                        content: "data:image/png;base64,secret",
+                        remoteUrl: "https://storage.example/file?signature=secret",
+                        storageKey: "private-key",
+                        status: "success",
+                    },
+                },
+            ],
+        },
+    });
+
+    const state = (await result) as Record<string, unknown>;
+    const node = (state.nodes as Array<Record<string, unknown>>)[0];
+    const metadata = node.metadata as Record<string, unknown>;
+    assert.equal("clientId" in state, false);
+    assert.equal("secret" in state, false);
+    assert.deepEqual(state.viewport, { x: 1, y: 2, k: 3 });
+    assert.deepEqual(node.position, { x: 0, y: 0 });
+    assert.equal("content" in metadata, false);
+    assert.equal("remoteUrl" in metadata, false);
+    assert.equal("storageKey" in metadata, false);
+    assert.equal(metadata.contentAvailable, true);
+});
+
 test("画布写操作只发送给当前激活网页", async (t) => {
     const session = new CanvasSession();
     const first = connect(session, "first");
@@ -104,9 +207,91 @@ test("tool result is accepted only from the request client", async (t) => {
     const call = first.event("tool_call");
     const requestId = String(field(call, "requestId"));
 
-    assert.equal(session.resolveResult("second", { requestId, result: { client: "second" } }), false);
-    assert.equal(session.resolveResult("first", { requestId, result: { client: "first" } }), true);
-    assert.deepEqual(await result, { client: "first" });
+    assert.equal(session.resolveResult("second", { requestId, result: { ok: true, client: "second" } }), false);
+    assert.equal(session.resolveResult("first", { requestId, result: { ok: true, client: "first" } }), true);
+    assert.deepEqual(await result, { ok: true });
+});
+
+test("a pending write can be claimed exactly once before execution", async (t) => {
+    const session = new CanvasSession();
+    const first = connect(session, "first");
+    t.after(() => first.close());
+
+    const result = session.callTool("canvas_create_text_node", { text: "claim first" });
+    const call = first.event("tool_call");
+    const requestId = String(field(call, "requestId"));
+
+    assert.equal(typeof field(call, "expiresAt"), "number");
+    assert.equal(session.claimRequest("second", requestId), false);
+    assert.equal(session.claimRequest("first", requestId), true);
+    assert.equal(session.claimRequest("first", requestId), false);
+    assert.equal(session.resolveResult("first", { requestId, result: { ok: true } }), true);
+    assert.deepEqual(await result, { ok: true });
+});
+
+test("a claimed write survives SSE disconnect until its execution result arrives", async () => {
+    const session = new CanvasSession({ approvalTimeoutMs: 20, executionTimeoutMs: 100 });
+    const first = connect(session, "first");
+    const result = session.callTool("canvas_create_text_node", { text: "execute once" });
+    const call = first.event("tool_call");
+    const requestId = String(field(call, "requestId"));
+
+    assert.equal(session.claimRequest("first", requestId), true);
+    first.close();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(session.resolveResult("first", { requestId, result: { ok: true } }), true);
+    assert.deepEqual(await result, { ok: true });
+});
+
+test("an executing write has a separate lease and reports an unknown outcome on expiry", async (t) => {
+    const session = new CanvasSession({ approvalTimeoutMs: 20, executionTimeoutMs: 15 });
+    const first = connect(session, "first");
+    t.after(() => first.close());
+    const result = session.callTool("canvas_create_text_node", { text: "slow" });
+    const requestId = String(field(first.event("tool_call"), "requestId"));
+
+    assert.equal(session.claimRequest("first", requestId), true);
+    await assert.rejects(result, /执行结果未知.*不要自动重试/);
+});
+
+test("Agent shutdown rejects executing writes without retaining their lease timers", async (t) => {
+    const session = new CanvasSession({ executionTimeoutMs: 60_000 });
+    const first = connect(session, "first");
+    t.after(() => first.close());
+    const result = session.callTool("canvas_create_text_node", { text: "shutdown" });
+    const requestId = String(field(first.event("tool_call"), "requestId"));
+
+    assert.equal(session.claimRequest("first", requestId), true);
+    session.shutdown();
+    await assert.rejects(result, /Agent 已停止/);
+    assert.equal(session.resolveResult("first", { requestId, result: { ok: true } }), false);
+});
+
+test("revoking an SSE credential closes its bound event stream", () => {
+    const session = new CanvasSession();
+    const response = new FakeSseResponse();
+    session.openEvents(new URL("http://127.0.0.1/events?clientId=first"), response as unknown as ServerResponse, {
+        credentialId: "session-hash",
+        expiresAt: Date.now() + 60_000,
+        isValid: () => true,
+    });
+
+    assert.equal(session.closeEventsForCredential("other"), 0);
+    assert.equal(session.closeEventsForCredential("session-hash"), 1);
+    assert.equal(response.ended, true);
+});
+
+test("an SSE event stream closes when its credential expires", async () => {
+    const session = new CanvasSession();
+    const response = new FakeSseResponse();
+    session.openEvents(new URL("http://127.0.0.1/events?clientId=first"), response as unknown as ServerResponse, {
+        credentialId: "session-hash",
+        expiresAt: Date.now() + 10,
+        isValid: () => false,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(response.ended, true);
 });
 
 test("生成状态查询由当前激活网页返回", async (t) => {
@@ -172,7 +357,10 @@ test("closing a client rejects its pending tool requests", async () => {
     first.close();
 
     const outcome = await Promise.race([
-        result.then(() => "resolved", (error) => error instanceof Error ? error.message : String(error)),
+        result.then(
+            () => "resolved",
+            (error) => (error instanceof Error ? error.message : String(error)),
+        ),
         new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 20)),
     ]);
     if (outcome === "pending") session.resolveResult("first", { requestId, result: null });
@@ -267,6 +455,7 @@ function field(value: unknown, key: string) {
 
 class FakeSseResponse extends EventEmitter {
     private chunks: string[] = [];
+    ended = false;
 
     writeHead() {
         return this;
@@ -279,11 +468,19 @@ class FakeSseResponse extends EventEmitter {
 
     event(type: string) {
         const chunk = this.chunks.find((item) => item.startsWith(`event: ${type}\n`));
-        const data = chunk?.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+        const data = chunk
+            ?.split("\n")
+            .find((line) => line.startsWith("data: "))
+            ?.slice(6);
         return data ? (JSON.parse(data) as unknown) : undefined;
     }
 
     close() {
         this.emit("close");
+    }
+
+    end() {
+        this.ended = true;
+        this.close();
     }
 }
