@@ -21,6 +21,8 @@ const dataUrlCache = new Map<string, Promise<string>>();
 const blobDataUrlCache = new WeakMap<Blob, Promise<string>>();
 const REFERENCE_MAX_EDGE = 2048;
 const REFERENCE_MAX_BYTES = 4 * 1024 * 1024;
+const IMAGE_PROXY_PATH = "/api/images/proxy";
+const PROXY_IMAGE_TYPES = new Set(["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"]);
 
 export type PreparedReferenceImage = ReferenceImage & {
     requestBlob: Blob;
@@ -33,14 +35,36 @@ export async function uploadImage(input: string | Blob): Promise<UploadedImage> 
 
 export async function downloadImageBlob(input: string | Blob) {
     if (input instanceof Blob) return input;
+    let directError: unknown;
     try {
-        const response = await fetch(input);
-        if (!response.ok) throw new ImageGenerationError(`图片 URL 下载失败（${response.status}）`, { failureStage: "result_download", kind: "url_download", httpStatus: response.status });
-        return await response.blob();
+        return await fetchImageBlob(input);
     } catch (error) {
         if (error instanceof ImageGenerationError) throw error;
-        throw new ImageGenerationError("图片 URL 下载失败，可能受到跨域（CORS）或网络策略限制", { failureStage: "result_download", kind: explicitCorsError(error) ? "cors" : "url_download", cause: error });
+        directError = error;
     }
+
+    if (isProxyableImageUrl(input)) {
+        try {
+            return await fetchImageBlob(IMAGE_PROXY_PATH, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ url: input }),
+            });
+        } catch (error) {
+            if (error instanceof ImageGenerationError) throw error;
+            throw new ImageGenerationError("图片 URL 直连失败，且同源图片代理不可用", {
+                failureStage: "result_download",
+                kind: explicitCorsError(directError) ? "cors" : "url_download",
+                cause: error,
+            });
+        }
+    }
+
+    throw new ImageGenerationError("图片 URL 下载失败，可能受到跨域（CORS）或网络策略限制", {
+        failureStage: "result_download",
+        kind: explicitCorsError(directError) ? "cors" : "url_download",
+        cause: directError,
+    });
 }
 
 export async function storeImageBlob(blob: Blob): Promise<UploadedImage> {
@@ -222,4 +246,44 @@ async function loadReferenceBitmap(blob: Blob): Promise<{ source: CanvasImageSou
 
 function explicitCorsError(error: unknown) {
     return error instanceof Error && /\bcors\b|cross-origin|access-control-allow-origin/i.test(error.message);
+}
+
+async function fetchImageBlob(input: string, init?: RequestInit) {
+    const response = await fetch(input, init);
+    if (!response.ok) {
+        const proxyMessage = input === IMAGE_PROXY_PATH ? await readProxyError(response) : "";
+        throw new ImageGenerationError(proxyMessage || `图片 URL 下载失败（${response.status}）`, {
+            failureStage: "result_download",
+            kind: "url_download",
+            httpStatus: response.status,
+        });
+    }
+    if (input === IMAGE_PROXY_PATH) {
+        const mimeType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() || "";
+        if (!PROXY_IMAGE_TYPES.has(mimeType)) {
+            throw new ImageGenerationError("图片代理返回的不是受支持的图片", {
+                failureStage: "result_download",
+                kind: "url_download",
+                httpStatus: response.status,
+            });
+        }
+    }
+    return response.blob();
+}
+
+async function readProxyError(response: Response) {
+    try {
+        const body = (await response.json()) as { error?: { message?: unknown } };
+        return typeof body.error?.message === "string" ? body.error.message : "";
+    } catch {
+        return "";
+    }
+}
+
+function isProxyableImageUrl(value: string) {
+    try {
+        return new URL(value).protocol === "https:";
+    } catch {
+        return false;
+    }
 }

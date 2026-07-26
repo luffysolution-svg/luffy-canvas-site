@@ -49,18 +49,75 @@ afterEach(() => {
 });
 
 describe("remote image downloads", () => {
-    it("classifies an explicit CORS failure", async () => {
-        vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Blocked by CORS: Access-Control-Allow-Origin is missing")));
+    it("uses the direct response without calling the proxy", async () => {
+        const image = new Blob(["image"], { type: "image/png" });
+        const fetchMock = vi.fn().mockResolvedValue(new Response(image, { headers: { "content-type": image.type } }));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await expect(downloadImageBlob("https://images.example/direct.png")).resolves.toEqual(image);
+        expect(fetchMock).toHaveBeenCalledOnce();
+    });
+
+    it("falls back to the same-origin proxy after an explicit CORS failure", async () => {
+        const image = new Blob(["image"], { type: "image/png" });
+        const fetchMock = vi
+            .fn()
+            .mockRejectedValueOnce(new TypeError("Blocked by CORS: Access-Control-Allow-Origin is missing"))
+            .mockResolvedValueOnce(new Response(image, { headers: { "content-type": image.type } }));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await expect(downloadImageBlob("https://images.example/cors.png")).resolves.toEqual(image);
+        expect(fetchMock).toHaveBeenNthCalledWith(
+            2,
+            "/api/images/proxy",
+            expect.objectContaining({
+                method: "POST",
+                body: JSON.stringify({ url: "https://images.example/cors.png" }),
+            }),
+        );
+    });
+
+    it("returns the proxy error when the host is not configured", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi
+                .fn()
+                .mockRejectedValueOnce(new TypeError("Blocked by CORS: Access-Control-Allow-Origin is missing"))
+                .mockResolvedValueOnce(
+                    Response.json({ error: { code: "proxy_not_configured", message: "图片代理尚未配置可访问的结果域名" } }, { status: 503 }),
+                ),
+        );
 
         const error = await captureImageError(downloadImageBlob("https://images.example/cors.png"));
 
         expect(error).toMatchObject({
             failureStage: "result_download",
-            kind: "cors",
+            kind: "url_download",
+            httpStatus: 503,
         });
+        expect(error.message).toBe("图片代理尚未配置可访问的结果域名");
     });
 
-    it("classifies an opaque network download failure separately from CORS", async () => {
+    it("rejects an HTML SPA fallback from a missing proxy route", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi
+                .fn()
+                .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+                .mockResolvedValueOnce(new Response("<html></html>", { headers: { "content-type": "text/html" } })),
+        );
+
+        const error = await captureImageError(downloadImageBlob("https://images.example/cors.png"));
+
+        expect(error).toMatchObject({
+            failureStage: "result_download",
+            kind: "url_download",
+            httpStatus: 200,
+        });
+        expect(error.message).toContain("不是受支持的图片");
+    });
+
+    it("classifies a direct and proxy network failure separately from CORS", async () => {
         vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
 
         const error = await captureImageError(downloadImageBlob("https://images.example/network.png"));
@@ -69,7 +126,7 @@ describe("remote image downloads", () => {
             failureStage: "result_download",
             kind: "url_download",
         });
-        expect(error.message).toContain("网络");
+        expect(error.message).toContain("代理");
     });
 });
 
