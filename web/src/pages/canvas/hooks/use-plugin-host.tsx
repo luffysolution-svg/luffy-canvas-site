@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
-import { requestEdit, requestGeneration, requestImageQuestion, type AiTextMessage } from "@/services/api/image";
+import { requestImageQuestion, type AiTextMessage } from "@/services/api/image";
+import { requestImageBatch } from "@/services/api/image-batch";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
 import { decodeChannelModel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { buildGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
@@ -9,7 +10,7 @@ import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { ensurePluginsLoaded } from "@/lib/canvas/plugin-loader";
 import { canvasThemes } from "@/lib/canvas-theme";
 import type { CanvasNodeToolbarItem, CanvasPluginAi, CanvasPluginHost } from "@/types/canvas-plugin";
-import type { ReferenceImage } from "@/types/image";
+import type { ImageGenerationOutput, ReferenceImage } from "@/types/image";
 import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import type { CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
@@ -51,8 +52,11 @@ export function usePluginHost(params: PluginHostParams) {
                 const config = { ...buildGenerationConfig(effectiveConfig, undefined, "image"), count: String(options?.count || 1), ...(options?.model ? { model: options.model } : {}), ...(options?.size ? { size: options.size } : {}) };
                 ensureReady(config);
                 const references = toReferences(options?.references);
-                const items = references.length ? await requestEdit(config, prompt, references, undefined, { signal: options?.signal }) : await requestGeneration(config, prompt, { signal: options?.signal });
-                return { images: items.map((item) => item.dataUrl) };
+                const batch = await requestImageBatch(config, prompt, references, { signal: options?.signal });
+                const failed = batch.results.find((item): item is PromiseRejectedResult => item.status === "rejected");
+                if (failed) throw failed.reason;
+                const items = batch.results.filter((item): item is PromiseFulfilledResult<ImageGenerationOutput> => item.status === "fulfilled").map((item) => item.value);
+                return { images: items.map((item) => (item.source === "data_url" ? item.dataUrl : item.remoteUrl)) };
             },
             generateVideo: async (prompt, options) => {
                 const config = {

@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Copy, Download, ExternalLink, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, Save, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Tag, Tooltip, Typography } from "antd";
 import localforage from "localforage";
@@ -14,29 +14,37 @@ import { modelOptionLabel, resolveModelChannel, useConfigStore, useEffectiveConf
 import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
 import { formatBytes, formatDuration, getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
-import { IMAGE_REQUEST_UNKNOWN_MESSAGE, ImageRequestUnknownError, requestEdit, requestGeneration } from "@/services/api/image";
-import { deleteStoredImages, resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { requestImageBatch } from "@/services/api/image-batch";
+import { IMAGE_REQUEST_UNKNOWN_MESSAGE, ImageGenerationError } from "@/services/api/image-errors";
+import { deleteStoredImages, downloadImageBlob, resolveImageUrl, storeImageBlob, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
-import type { ReferenceImage } from "@/types/image";
+import { useCopyText } from "@/hooks/use-copy-text";
+import type { ImageFailureStage, ImageGenerationOutput, ImageGenerationStatus, ImageReferenceOptimization, ReferenceImage } from "@/types/image";
 
 type GeneratedImage = {
     id: string;
-    dataUrl: string;
+    dataUrl?: string;
+    remoteUrl?: string;
     storageKey?: string;
     durationMs: number;
-    width: number;
-    height: number;
-    bytes: number;
+    width?: number;
+    height?: number;
+    bytes?: number;
     mimeType?: string;
+    expiresAt?: number;
+    providerTaskId?: string;
+    providerRequestId?: string;
+    failureStage?: ImageFailureStage;
     persistenceError?: string;
 };
 
 type GenerationResult = {
     id: string;
-    status: "pending" | "success" | "failed" | "unknown";
+    status: ImageGenerationStatus;
     image?: GeneratedImage;
     error?: string;
+    failureStage?: ImageFailureStage;
 };
 
 type GenerationLog = {
@@ -89,6 +97,7 @@ export default function ImagePage() {
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [startedAt, setStartedAt] = useState(0);
     const [elapsedMs, setElapsedMs] = useState(0);
+    const [referenceOptimization, setReferenceOptimization] = useState<(ImageReferenceOptimization & { enabled: boolean }) | null>(null);
     const [selectedLogIds, setSelectedLogIds] = useState<string[]>([]);
     const [previewLog, setPreviewLog] = useState<GenerationLog | null>(null);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -98,6 +107,8 @@ export default function ImagePage() {
     const updateAgentTask = useWorkbenchAgentStore((state) => state.updateTask);
     const processedCommandRef = useRef(0);
     const agentTaskIdRef = useRef<string | undefined>(undefined);
+    const logIdByImageIdRef = useRef(new Map<string, string>());
+    const copyText = useCopyText();
 
     const model = effectiveConfig.imageModel || effectiveConfig.model;
     const qwenReferences = resolveModelChannel(effectiveConfig, model).apiFormat === "qwen";
@@ -178,22 +189,25 @@ export default function ImagePage() {
         setRunning(true);
         if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
         setPreviewLog(null);
-        setResults(Array.from({ length: generationCount }, () => ({ id: nanoid(), status: "pending" })));
+        setReferenceOptimization(() => null);
+        setResults(() => Array.from({ length: generationCount }, () => ({ id: nanoid(), status: "queued" })));
         const batchStartedAt = performance.now();
         setStartedAt(batchStartedAt);
 
-        const tasks = Array.from({ length: generationCount }, (_, index) => runGenerationSlot(index, snapshot));
-
-        const result = await Promise.allSettled(tasks);
-        const successImages = result.filter((item): item is PromiseFulfilledResult<GeneratedImage> => item.status === "fulfilled").map((item) => item.value);
-        const successCount = successImages.length;
-        const unknownCount = result.filter((item) => item.status === "rejected" && item.reason instanceof ImageRequestUnknownError).length;
-        const failCount = generationCount - successCount - unknownCount;
-        const failed = result.find((item): item is PromiseRejectedResult => item.status === "rejected");
-        const error = failed?.reason instanceof Error ? failed.reason.message : failCount ? "生成失败" : undefined;
-        if (agentTaskId) updateAgentTask(agentTaskId, { status: successCount ? "succeeded" : "failed", successCount, failCount: failCount + unknownCount, error: successCount ? undefined : error });
-
         try {
+            const execution = await executeImageBatch(
+                snapshot,
+                Array.from({ length: generationCount }, (_, index) => index),
+                batchStartedAt,
+            );
+            const successImages = execution.images;
+            const successCount = execution.results.filter((item) => item.status === "fulfilled").length;
+            const unknownCount = execution.results.filter((item) => item.status === "rejected" && item.reason instanceof ImageGenerationError && item.reason.resultUnknown).length;
+            const failCount = generationCount - successCount - unknownCount;
+            const failed = execution.results.find((item): item is PromiseRejectedResult => item.status === "rejected");
+            const error = failed?.reason instanceof Error ? failed.reason.message : failCount ? "生成失败" : undefined;
+            if (agentTaskId) updateAgentTask(agentTaskId, { status: successCount ? "succeeded" : "failed", successCount, failCount: failCount + unknownCount, error: successCount ? undefined : error });
+
             await saveLog(
                 buildLog({
                     prompt: text,
@@ -211,6 +225,11 @@ export default function ImagePage() {
             if (unknownCount) message.warning(IMAGE_REQUEST_UNKNOWN_MESSAGE);
             else if (successCount) message.success("图片已生成");
             else message.error(failed?.reason instanceof Error ? failed.reason.message : "生成失败");
+        } catch (error) {
+            const details = imageErrorDetails(error, "provider_submit");
+            setResults((value) => value.map((item) => (isTerminalResultStatus(item.status) ? item : { ...item, status: "failed", error: details.message, failureStage: details.failureStage })));
+            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: generationCount, error: details.message });
+            message.error(details.message);
         } finally {
             setRunning(false);
         }
@@ -238,32 +257,114 @@ export default function ImagePage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoRunToken]);
 
-    const downloadImage = (image: GeneratedImage, index: number) => {
-        saveAs(image.dataUrl, `image-${index + 1}.png`);
+    const updateLoggedImage = async (image: GeneratedImage) => {
+        const logId = logIdByImageIdRef.current.get(image.id);
+        if (!logId) return;
+        try {
+            const log = await logStore.getItem<GenerationLog>(logId);
+            if (!log) return;
+            await logStore.setItem(logId, serializeLog({ ...log, images: (log.images || []).map((item) => (item.id === image.id ? image : item)) }));
+            await refreshLogs();
+        } catch {
+            message.warning("图片已保存，但生成记录未能同步更新");
+        }
+    };
+
+    const ensureResultStored = async (image: GeneratedImage, index: number) => {
+        if (image.storageKey && image.dataUrl) return image;
+        const source = imageDisplayUrl(image);
+        if (!source) throw new Error("没有可保存的图片");
+        setResults((value) => updateResultAt(value, index, { status: "downloading", image: { ...image, persistenceError: undefined, failureStage: undefined }, error: undefined, failureStage: undefined }));
+        try {
+            const stored = await storeImageBlob(await downloadImageBlob(source));
+            const nextImage: GeneratedImage = {
+                ...image,
+                dataUrl: stored.url,
+                storageKey: stored.storageKey,
+                width: stored.width,
+                height: stored.height,
+                bytes: stored.bytes,
+                mimeType: stored.mimeType,
+                persistenceError: undefined,
+                failureStage: undefined,
+            };
+            setResults((value) => updateResultAt(value, index, { status: "stored", image: nextImage, error: undefined, failureStage: undefined }));
+            await updateLoggedImage(nextImage);
+            return nextImage;
+        } catch (error) {
+            const details = imageErrorDetails(error, image.remoteUrl ? "result_download" : "indexeddb_write");
+            const nextImage = { ...image, persistenceError: details.message, failureStage: details.failureStage };
+            setResults((value) => updateResultAt(value, index, { status: image.remoteUrl ? "remote_only" : "generated", image: nextImage, error: undefined, failureStage: details.failureStage }));
+            throw error;
+        }
+    };
+
+    const openOriginalImage = (image: GeneratedImage) => {
+        if (image.remoteUrl) window.open(image.remoteUrl, "_blank", "noopener,noreferrer");
+    };
+
+    const copyImageLink = (image: GeneratedImage) => {
+        if (image.remoteUrl) copyText(image.remoteUrl, "图片链接已复制");
+    };
+
+    const downloadImage = async (image: GeneratedImage, index: number) => {
+        const source = imageDisplayUrl(image);
+        if (!source) {
+            message.error("没有可下载的图片");
+            return;
+        }
+        try {
+            if (image.remoteUrl && !image.storageKey) saveAs(await downloadImageBlob(image.remoteUrl), `image-${index + 1}.png`);
+            else saveAs(source, `image-${index + 1}.png`);
+        } catch (error) {
+            message.error(imageErrorDetails(error, "result_download").message);
+        }
+    };
+
+    const saveResultLocally = async (image: GeneratedImage, index: number) => {
+        try {
+            await ensureResultStored(image, index);
+            message.success("图片已保存到本地");
+        } catch (error) {
+            message.error(imageErrorDetails(error, image.remoteUrl ? "result_download" : "indexeddb_write").message);
+        }
     };
 
     const addResultToReferences = async (image: GeneratedImage, index: number) => {
-        if (references.length >= referenceLimit || image.bytes > referenceMaxBytes) {
+        if (references.length >= referenceLimit) {
             message.warning("Qwen 最多支持 3 张参考图，且单张不能超过 10MB");
             return;
         }
-        const stored = await uploadImage(image.dataUrl);
-        setReferences((value) => [...value, { id: nanoid(), name: `result-${index + 1}.png`, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey, bytes: stored.bytes, width: stored.width, height: stored.height }].slice(0, referenceLimit));
-        message.success("已加入参考图");
+        try {
+            const stored = await ensureResultStored(image, index);
+            if ((stored.bytes || 0) > referenceMaxBytes || (qwenReferences && stored.mimeType && !QWEN_REFERENCE_MIME_TYPES.includes(stored.mimeType.toLowerCase()))) {
+                message.warning("Qwen 最多支持 3 张、单张不超过 10MB 的 JPG/PNG/BMP/TIFF/WEBP/GIF 参考图");
+                return;
+            }
+            setReferences((value) => [...value, { id: nanoid(), name: `result-${index + 1}.png`, type: stored.mimeType || "image/png", dataUrl: stored.dataUrl || "", storageKey: stored.storageKey, bytes: stored.bytes, width: stored.width, height: stored.height }].slice(0, referenceLimit));
+            message.success("已加入参考图");
+        } catch (error) {
+            message.error(imageErrorDetails(error, image.remoteUrl ? "result_download" : "indexeddb_write").message);
+        }
     };
 
     const saveResultToAssets = async (image: GeneratedImage, index: number) => {
-        const stored = await uploadImage(image.dataUrl);
-        addAsset({
-            kind: "image",
-            title: `生成结果 ${index + 1}`,
-            coverUrl: stored.url,
-            tags: [],
-            source: "生图工作台",
-            data: { dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType },
-            metadata: { source: "image-page", prompt },
-        });
-        message.success("已加入我的资产");
+        try {
+            const stored = await ensureResultStored(image, index);
+            if (!stored.dataUrl || !stored.storageKey) throw new Error("图片未能保存到本地");
+            addAsset({
+                kind: "image",
+                title: `生成结果 ${index + 1}`,
+                coverUrl: stored.dataUrl,
+                tags: [],
+                source: "生图工作台",
+                data: { dataUrl: stored.dataUrl, storageKey: stored.storageKey, width: stored.width || 0, height: stored.height || 0, bytes: stored.bytes || 0, mimeType: stored.mimeType || "image/png" },
+                metadata: { source: "image-page", prompt },
+            });
+            message.success("已加入我的资产");
+        } catch (error) {
+            message.error(imageErrorDetails(error, image.remoteUrl ? "result_download" : "indexeddb_write").message);
+        }
     };
 
     const insertPickedAsset = async (payload: InsertAssetPayload) => {
@@ -289,6 +390,7 @@ export default function ImagePage() {
         setResults([]);
         setElapsedMs(0);
         setStartedAt(0);
+        setReferenceOptimization(() => null);
         setSelectedLogIds([]);
         setPreviewLog(null);
     };
@@ -305,6 +407,7 @@ export default function ImagePage() {
     };
 
     const saveLog = async (log: GenerationLog) => {
+        log.images.forEach((image) => logIdByImageIdRef.current.set(image.id, log.id));
         try {
             await logStore.setItem(log.id, serializeLog(log));
             await refreshLogs();
@@ -313,7 +416,12 @@ export default function ImagePage() {
         }
     };
 
-    const refreshLogs = async () => setLogs(await readStoredLogs());
+    const refreshLogs = async () => {
+        const nextLogs = await readStoredLogs();
+        logIdByImageIdRef.current.clear();
+        nextLogs.forEach((log) => log.images.forEach((image) => logIdByImageIdRef.current.set(image.id, log.id)));
+        setLogs(() => nextLogs);
+    };
 
     const previewGenerationLog = async (log: GenerationLog) => {
         setPreviewLog(log);
@@ -324,13 +432,14 @@ export default function ImagePage() {
         if (log.config.quality) updateConfig("quality", log.config.quality);
         if (log.config.size) updateConfig("size", log.config.size);
         if (log.config.count) updateConfig("count", log.config.count);
-        setResults([
-            ...log.images.map((image) => ({ id: image.id, status: "success" as const, image })),
+        setResults(() => [
+            ...log.images.map((image) => ({ id: image.id, status: image.storageKey ? ("stored" as const) : image.remoteUrl ? ("remote_only" as const) : ("generated" as const), image })),
             ...Array.from({ length: log.unknownCount || 0 }, () => ({ id: nanoid(), status: "unknown" as const, error: IMAGE_REQUEST_UNKNOWN_MESSAGE })),
         ]);
+        setReferenceOptimization(() => null);
     };
 
-    const buildRequestSnapshot = () => {
+    const buildRequestSnapshot = (count = generationCount) => {
         const text = prompt.trim();
         if (!text) {
             message.error("请输入生图提示词");
@@ -341,39 +450,94 @@ export default function ImagePage() {
             openConfigDialog(true);
             return null;
         }
-        return { text, config: { ...effectiveConfig, model, count: "1" }, references: [...references] };
+        return { text, config: { ...effectiveConfig, model, count: String(count) }, references: [...references] };
     };
 
-    const runGenerationSlot = async (index: number, snapshot: { text: string; config: AiConfig; references: ReferenceImage[] }) => {
-        const itemStartedAt = performance.now();
-        try {
-            const result = snapshot.references.length ? await requestEdit(snapshot.config, snapshot.text, snapshot.references) : await requestGeneration(snapshot.config, snapshot.text);
-            const image = result[0];
-            if (!image) throw new Error("接口没有返回图片");
-            let nextImage: GeneratedImage;
-            try {
-                const stored = await uploadImage(image.dataUrl);
-                nextImage = { id: image.id, dataUrl: stored.url, storageKey: stored.storageKey, durationMs: performance.now() - itemStartedAt, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType };
-            } catch (error) {
-                const meta = await readImageMeta(image.dataUrl);
-                nextImage = { id: image.id, dataUrl: image.dataUrl, durationMs: performance.now() - itemStartedAt, width: meta.width, height: meta.height, bytes: getDataUrlByteSize(image.dataUrl), mimeType: meta.mimeType, persistenceError: error instanceof Error ? error.message : "图片未能保存到本地" };
-            }
-            setResults((value) => updateResultAt(value, index, { status: "success", image: nextImage }));
-            return nextImage;
-        } catch (error) {
-            setResults((value) => updateResultAt(value, index, { status: error instanceof ImageRequestUnknownError ? "unknown" : "failed", error: error instanceof Error ? error.message : "生成失败" }));
-            throw error;
-        }
+    const executeImageBatch = async (snapshot: { text: string; config: AiConfig; references: ReferenceImage[] }, targetIndexes: number[], batchStartedAt: number) => {
+        const batch = await requestImageBatch(snapshot.config, snapshot.text, snapshot.references, {
+            onStatus: (batchIndex, status, detail) => {
+                const targetIndex = targetIndexes[batchIndex];
+                if (targetIndex === undefined) return;
+                if (detail instanceof ImageGenerationError) {
+                    setResults((value) => updateResultAt(value, targetIndex, { status, error: detail.message, failureStage: detail.failureStage, image: undefined }));
+                    return;
+                }
+                const image = isImageGenerationOutput(detail) ? generatedImageFromOutput(detail, performance.now() - batchStartedAt) : undefined;
+                setResults((value) => updateResultAt(value, targetIndex, { status, ...(image ? { image } : {}), error: undefined, failureStage: undefined }));
+            },
+        });
+        setReferenceOptimization(() => ({ ...batch.referenceOptimization, enabled: snapshot.config.optimizeImageReferences }));
+
+        const images = await Promise.all(
+            batch.results.map(async (result, batchIndex) => {
+                const targetIndex = targetIndexes[batchIndex];
+                if (targetIndex === undefined) return null;
+                if (result.status === "rejected") {
+                    const details = imageErrorDetails(result.reason, "provider_processing");
+                    const status = result.reason instanceof ImageGenerationError && result.reason.resultUnknown ? "unknown" : "failed";
+                    setResults((value) => updateResultAt(value, targetIndex, { status, error: details.message, failureStage: details.failureStage, image: undefined }));
+                    return null;
+                }
+
+                const output = result.value;
+                const generatedImage = generatedImageFromOutput(output, performance.now() - batchStartedAt);
+                if (output.source === "remote_url") {
+                    setResults((value) => updateResultAt(value, targetIndex, { status: "remote_only", image: generatedImage, error: undefined, failureStage: undefined }));
+                    return generatedImage;
+                }
+
+                setResults((value) => updateResultAt(value, targetIndex, { status: "generated", image: generatedImage, error: undefined, failureStage: undefined }));
+                try {
+                    const stored = await uploadImage(output.dataUrl);
+                    const storedImage: GeneratedImage = {
+                        ...generatedImage,
+                        dataUrl: stored.url,
+                        storageKey: stored.storageKey,
+                        width: stored.width,
+                        height: stored.height,
+                        bytes: stored.bytes,
+                        mimeType: stored.mimeType,
+                    };
+                    setResults((value) => updateResultAt(value, targetIndex, { status: "stored", image: storedImage, error: undefined, failureStage: undefined }));
+                    return storedImage;
+                } catch (error) {
+                    const meta = await readImageMeta(output.dataUrl);
+                    const details = imageErrorDetails(error, "indexeddb_write");
+                    const generatedOnlyImage: GeneratedImage = {
+                        ...generatedImage,
+                        width: meta.width,
+                        height: meta.height,
+                        bytes: getDataUrlByteSize(output.dataUrl),
+                        mimeType: output.mimeType || meta.mimeType,
+                        failureStage: details.failureStage,
+                        persistenceError: details.message,
+                    };
+                    setResults((value) => updateResultAt(value, targetIndex, { status: "generated", image: generatedOnlyImage, error: undefined, failureStage: details.failureStage }));
+                    return generatedOnlyImage;
+                }
+            }),
+        );
+        return { results: batch.results, images: images.filter((image): image is GeneratedImage => Boolean(image)) };
     };
 
     const retryResult = async (index: number) => {
-        const snapshot = buildRequestSnapshot();
+        const snapshot = buildRequestSnapshot(1);
         if (!snapshot) return;
         setPreviewLog(null);
-        setResults((value) => updateResultAt(value, index, { status: "pending", error: undefined, image: undefined }));
+        setResults((value) => updateResultAt(value, index, { status: "queued", error: undefined, failureStage: undefined, image: undefined }));
         const retryStartedAt = performance.now();
+        setElapsedMs(0);
+        setStartedAt(retryStartedAt);
+        setRunning(true);
         try {
-            const image = await runGenerationSlot(index, snapshot);
+            const execution = await executeImageBatch(snapshot, [index], retryStartedAt);
+            const result = execution.results[0];
+            const image = execution.images[0];
+            if (!result || result.status === "rejected" || !image) {
+                if (result?.status === "rejected" && result.reason instanceof ImageGenerationError && result.reason.resultUnknown) message.warning(IMAGE_REQUEST_UNKNOWN_MESSAGE);
+                else if (result?.status === "rejected") message.error(result.reason instanceof Error ? result.reason.message : "生成失败");
+                return;
+            }
             await saveLog(
                 buildLog({
                     prompt: snapshot.text,
@@ -389,8 +553,12 @@ export default function ImagePage() {
                 }),
             );
             message.success("重试成功");
-        } catch {
-            // runGenerationSlot 已经把结果状态更新为 failed
+        } catch (error) {
+            const details = imageErrorDetails(error, "provider_submit");
+            setResults((value) => updateResultAt(value, index, { status: "failed", error: details.message, failureStage: details.failureStage, image: undefined }));
+            message.error(details.message);
+        } finally {
+            setRunning(false);
         }
     };
 
@@ -508,19 +676,39 @@ export default function ImagePage() {
                             <div>
                                 <h2 className="text-xl font-semibold">生成结果</h2>
                             </div>
-                            {running ? <Tag className="m-0 px-2 py-1">等待 {formatDuration(elapsedMs)}</Tag> : null}
+                            <div className="flex flex-wrap justify-end gap-2">
+                                {referenceOptimization?.total ? (
+                                    <Tag className="m-0 px-2 py-1" color={referenceOptimization.optimized ? "green" : undefined}>
+                                        参考图优化 {referenceOptimization.optimized}/{referenceOptimization.total}
+                                        {!referenceOptimization.enabled ? "（已关闭）" : ""}
+                                    </Tag>
+                                ) : null}
+                                {running ? <Tag className="m-0 px-2 py-1">等待 {formatDuration(elapsedMs)}</Tag> : null}
+                            </div>
                         </div>
                         {results.length ? (
                             <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">
                                 {results.map((result, index) =>
-                                    result.status === "success" && result.image ? (
-                                        <ResultImageCard key={result.id} image={result.image} index={index} onEdit={addResultToReferences} onDownload={downloadImage} onSaveAsset={saveResultToAssets} />
+                                    isDisplayableResultStatus(result.status) && result.image ? (
+                                        <ResultImageCard
+                                            key={result.id}
+                                            image={result.image}
+                                            status={result.status}
+                                            actionsDisabled={running}
+                                            index={index}
+                                            onEdit={addResultToReferences}
+                                            onDownload={downloadImage}
+                                            onSaveAsset={saveResultToAssets}
+                                            onOpenOriginal={openOriginalImage}
+                                            onCopyLink={copyImageLink}
+                                            onSaveLocal={saveResultLocally}
+                                        />
                                     ) : result.status === "unknown" ? (
                                         <UnknownImageCard key={result.id} error={result.error || IMAGE_REQUEST_UNKNOWN_MESSAGE} />
                                     ) : result.status === "failed" ? (
-                                        <FailedImageCard key={result.id} error={result.error || "生成失败"} onRetry={() => retryResult(index)} />
+                                        <FailedImageCard key={result.id} error={result.error || "生成失败"} retryDisabled={running} onRetry={() => retryResult(index)} />
                                     ) : (
-                                        <PendingImageCard key={result.id} />
+                                        <PendingImageCard key={result.id} status={result.status} />
                                     ),
                                 )}
                             </div>
@@ -587,52 +775,99 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog }: {
 
 function ResultImageCard({
     image,
+    status,
+    actionsDisabled,
     index,
     onEdit,
     onDownload,
     onSaveAsset,
+    onOpenOriginal,
+    onCopyLink,
+    onSaveLocal,
 }: {
     image: GeneratedImage;
+    status: ImageGenerationStatus;
+    actionsDisabled: boolean;
     index: number;
-    onEdit: (image: GeneratedImage, index: number) => void;
-    onDownload: (image: GeneratedImage, index: number) => void;
-    onSaveAsset: (image: GeneratedImage, index: number) => void;
+    onEdit: (image: GeneratedImage, index: number) => void | Promise<void>;
+    onDownload: (image: GeneratedImage, index: number) => void | Promise<void>;
+    onSaveAsset: (image: GeneratedImage, index: number) => void | Promise<void>;
+    onOpenOriginal: (image: GeneratedImage) => void;
+    onCopyLink: (image: GeneratedImage) => void;
+    onSaveLocal: (image: GeneratedImage, index: number) => void | Promise<void>;
 }) {
+    const source = imageDisplayUrl(image);
+    const remote = Boolean(image.remoteUrl);
+    const stored = Boolean(image.storageKey);
     return (
         <div className="overflow-hidden rounded-lg border border-stone-200 bg-background dark:border-stone-800">
-            <Image src={image.dataUrl} alt={`生成结果 ${index + 1}`} className="block h-auto w-full object-contain" />
+            <Image src={source} alt={`生成结果 ${index + 1}`} className="block h-auto w-full object-contain" />
             <div className="space-y-2 border-t border-stone-200 px-3 py-2.5 dark:border-stone-800">
-                <div className="flex min-w-0 gap-x-2 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
-                    <span>
-                        {image.width}x{image.height}
-                    </span>
-                    <span>{formatBytes(image.bytes)}</span>
+                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
+                    <Tag className="m-0">{imageStatusLabel(status)}</Tag>
+                    {image.width && image.height ? <span>{image.width}x{image.height}</span> : null}
+                    {image.bytes ? <span>{formatBytes(image.bytes)}</span> : null}
                     <span>{formatDuration(image.durationMs)}</span>
                 </div>
-                {image.persistenceError ? <div className="text-xs text-amber-700 dark:text-amber-300">未能保存到本地，请及时下载图片。</div> : null}
-                <div className="grid min-w-0 grid-cols-3 gap-2">
+                {status === "remote_only" ? <div className="text-xs text-amber-700 dark:text-amber-300">当前为远程链接，可能过期，建议保存到本地。</div> : null}
+                {image.expiresAt ? <div className="text-xs text-stone-500 dark:text-stone-400">链接有效期至 {new Date(image.expiresAt).toLocaleString("zh-CN", { hour12: false })}</div> : null}
+                {image.persistenceError ? <div className="text-xs text-amber-700 dark:text-amber-300">{image.persistenceError}</div> : null}
+                {remote ? (
+                    <div className="grid min-w-0 grid-cols-2 gap-2">
+                        <Tooltip title="在新窗口打开远程原图">
+                            <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<ExternalLink className="size-3.5" />} disabled={actionsDisabled} onClick={() => onOpenOriginal(image)}>
+                                打开原图
+                            </Button>
+                        </Tooltip>
+                        <Tooltip title="复制远程图片链接">
+                            <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<Copy className="size-3.5" />} disabled={actionsDisabled} onClick={() => onCopyLink(image)}>
+                                复制链接
+                            </Button>
+                        </Tooltip>
+                        <Tooltip title="下载图片">
+                            <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<Download className="size-3.5" />} disabled={actionsDisabled} onClick={() => void onDownload(image, index)}>
+                                下载
+                            </Button>
+                        </Tooltip>
+                        <Tooltip title={stored ? "已保存到浏览器本地" : "下载远程图片并保存到浏览器本地"}>
+                            <Button
+                                className={RESULT_ACTION_BUTTON_CLASS}
+                                size="small"
+                                icon={<Save className="size-3.5" />}
+                                loading={status === "downloading"}
+                                disabled={stored || actionsDisabled}
+                                onClick={() => void onSaveLocal(image, index)}
+                            >
+                                {stored ? "已保存" : "保存到本地"}
+                            </Button>
+                        </Tooltip>
+                    </div>
+                ) : null}
+                <div className={`grid min-w-0 gap-2 ${remote ? "grid-cols-2" : "grid-cols-3"}`}>
                     <Tooltip title="添加到资产">
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => void onSaveAsset(image, index)}>
+                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<FolderPlus className="size-3.5" />} disabled={actionsDisabled || status === "downloading"} onClick={() => void onSaveAsset(image, index)}>
                             添加到资产
                         </Button>
                     </Tooltip>
                     <Tooltip title="加入参考图">
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<PenLine className="size-3.5" />} onClick={() => void onEdit(image, index)}>
+                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<PenLine className="size-3.5" />} disabled={actionsDisabled || status === "downloading"} onClick={() => void onEdit(image, index)}>
                             加入参考图
                         </Button>
                     </Tooltip>
-                    <Tooltip title="下载">
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(image, index)}>
-                            下载
-                        </Button>
-                    </Tooltip>
+                    {!remote ? (
+                        <Tooltip title="下载">
+                            <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<Download className="size-3.5" />} disabled={actionsDisabled} onClick={() => void onDownload(image, index)}>
+                                下载
+                            </Button>
+                        </Tooltip>
+                    ) : null}
                 </div>
             </div>
         </div>
     );
 }
 
-function PendingImageCard() {
+function PendingImageCard({ status }: { status: ImageGenerationStatus }) {
     return (
         <div className="relative aspect-square overflow-hidden rounded-lg border border-dashed border-stone-300 bg-stone-50 dark:border-stone-700 dark:bg-stone-900">
             <div
@@ -644,13 +879,13 @@ function PendingImageCard() {
             />
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-stone-500 dark:text-stone-400">
                 <LoaderCircle className="size-6 animate-spin" />
-                <span>生成中</span>
+                <span>{status === "queued" ? "排队中" : status === "downloading" ? "保存中" : "生成中"}</span>
             </div>
         </div>
     );
 }
 
-function FailedImageCard({ error, onRetry }: { error: string; onRetry: () => void }) {
+function FailedImageCard({ error, retryDisabled, onRetry }: { error: string; retryDisabled: boolean; onRetry: () => void }) {
     return (
         <div className="overflow-hidden rounded-lg border border-red-200 bg-red-50 dark:border-red-950 dark:bg-red-950/20">
             <div className="flex aspect-square flex-col items-center justify-center gap-3 p-5 text-center">
@@ -660,7 +895,7 @@ function FailedImageCard({ error, onRetry }: { error: string; onRetry: () => voi
                 </Typography.Paragraph>
             </div>
             <div className="flex justify-end border-t border-red-200 p-3 dark:border-red-950">
-                <Button size="small" danger onClick={onRetry}>
+                <Button size="small" danger disabled={retryDisabled} onClick={onRetry}>
                     重试
                 </Button>
             </div>
@@ -679,6 +914,49 @@ function UnknownImageCard({ error }: { error: string }) {
             </div>
         </div>
     );
+}
+
+function isImageGenerationOutput(value: unknown): value is ImageGenerationOutput {
+    return Boolean(value && typeof value === "object" && "source" in value && "status" in value);
+}
+
+function generatedImageFromOutput(output: ImageGenerationOutput, durationMs: number): GeneratedImage {
+    return {
+        id: output.id,
+        ...(output.source === "data_url" ? { dataUrl: output.dataUrl, bytes: getDataUrlByteSize(output.dataUrl) } : { remoteUrl: output.remoteUrl }),
+        durationMs,
+        mimeType: output.mimeType,
+        expiresAt: output.expiresAt,
+        providerTaskId: output.providerTaskId,
+        providerRequestId: output.providerRequestId,
+    };
+}
+
+function imageDisplayUrl(image: GeneratedImage) {
+    return image.dataUrl || image.remoteUrl || "";
+}
+
+function imageErrorDetails(error: unknown, fallbackStage: ImageFailureStage) {
+    return {
+        message: error instanceof Error ? error.message : "图片处理失败",
+        failureStage: error instanceof ImageGenerationError ? error.failureStage : fallbackStage,
+    };
+}
+
+function isDisplayableResultStatus(status: ImageGenerationStatus) {
+    return status === "generated" || status === "downloading" || status === "stored" || status === "remote_only";
+}
+
+function isTerminalResultStatus(status: ImageGenerationStatus) {
+    return status === "generated" || status === "stored" || status === "remote_only" || status === "unknown" || status === "failed";
+}
+
+function imageStatusLabel(status: ImageGenerationStatus) {
+    if (status === "stored") return "已保存";
+    if (status === "remote_only") return "仅远程";
+    if (status === "downloading") return "保存中";
+    if (status === "generated") return "已生成";
+    return status === "queued" ? "排队中" : status === "generating" ? "生成中" : status === "unknown" ? "待确认" : "失败";
 }
 
 function updateResultAt(results: GenerationResult[], index: number, next: Partial<GenerationResult>) {
@@ -817,10 +1095,10 @@ async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog>
         })),
     );
     const images = await Promise.all(
-        (log.images || []).map(async (item) => ({
-            ...item,
-            dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl),
-        })),
+        (log.images || []).map(async (item) => {
+            const dataUrl = item.storageKey ? await resolveImageUrl(item.storageKey, item.dataUrl || "") : item.dataUrl;
+            return { ...item, dataUrl };
+        }),
     );
     const config = normalizeLogConfig(log);
     return {
@@ -841,7 +1119,7 @@ async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog>
         quality: log.quality || config.quality || "",
         status: log.status || (log.unknownCount ? "待确认" : "成功"),
         images,
-        thumbnails: images.map((image) => image.dataUrl).filter(Boolean),
+        thumbnails: images.map(imageDisplayUrl).filter((value): value is string => Boolean(value)),
     };
 }
 
@@ -930,6 +1208,6 @@ function buildLog({
         quality: logConfig.quality,
         status,
         images,
-        thumbnails: images.map((image) => image.dataUrl).filter(Boolean),
+        thumbnails: images.map(imageDisplayUrl).filter((value): value is string => Boolean(value)),
     };
 }
