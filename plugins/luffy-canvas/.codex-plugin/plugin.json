@@ -1,0 +1,32 @@
+{
+  "name": "luffy-canvas",
+  "version": "0.1.0",
+  "description": "Use Codex to open and operate Luffy Canvas through the local Luffy Canvas Agent MCP server.",
+  "author": {
+    "name": "luffysolution-svg",
+    "url": "https://github.com/luffysolution-svg"
+  },
+  "homepage": "https://luffy-canvas-site.vercel.app/",
+  "repository": "https://github.com/luffysolution-svg/luffy-canvas-site",
+  "license": "AGPL-3.0-only",
+  "keywords": ["luffy-canvas", "canvas", "mcp", "agent"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Luffy Canvas",
+    "shortDescription": "Open and operate Luffy Canvas from Codex.",
+    "longDescription": "Connect Codex to the local Luffy Canvas Agent so it can inspect the current board, create and arrange nodes, connect workflows, and request generation under the canvas approval policy.",
+    "developerName": "luffysolution-svg",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://luffy-canvas-site.vercel.app/",
+    "defaultPrompt": [
+      "打开 Luffy Canvas 并安全配对",
+      "读取当前画布并总结节点结构",
+      "根据选中节点创建一组生图提示词"
+    ],
+    "brandColor": "#2563EB",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png"
+  }
+}

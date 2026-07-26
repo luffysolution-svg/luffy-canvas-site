@@ -1,14 +1,14 @@
 {
-  "name": "luffy-canvas-site-local",
+  "name": "luffy-canvas-local",
   "interface": {
-    "displayName": "luffy-canvas-site"
+    "displayName": "Luffy Canvas Local"
   },
   "plugins": [
     {
-      "name": "infinite-canvas",
+      "name": "luffy-canvas",
       "source": {
         "source": "local",
-        "path": "./plugins/infinite-canvas"
+        "path": "./plugins/luffy-canvas"
       },
       "policy": {
         "installation": "AVAILABLE",

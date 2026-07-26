@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "luffy-canvas": {
+      "command": "node",
+      "args": ["./mcp/server.mjs", "--profile", "editor"],
+      "cwd": ".",
+      "startup_timeout_sec": 20,
+      "tool_timeout_sec": 180
+    }
+  }
+}
