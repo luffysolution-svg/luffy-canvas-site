@@ -41,15 +41,21 @@ export async function resolveMetadataReferences(metadata: CanvasNodeMetadata) {
     return references.every(Boolean) ? (references as ReferenceImage[]) : null;
 }
 
-export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
+export async function hydrateCanvasImages(nodes: CanvasNodeData[]): Promise<CanvasNodeData[]> {
     return Promise.all(
-        nodes.map(async (node) => {
+        nodes.map(async (node): Promise<CanvasNodeData> => {
             const content = node.metadata?.content;
             if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && node.metadata?.storageKey) return { ...node, metadata: { ...node.metadata, content: await resolveMediaUrl(node.metadata.storageKey, content) } };
             if (node.type !== CanvasNodeType.Image || !content) return node;
             if (node.metadata?.storageKey) return { ...node, metadata: { ...node.metadata, content: await resolveImageUrl(node.metadata.storageKey, content) } };
-            if (!content.startsWith("data:image/")) return node;
-            return { ...node, metadata: { ...node.metadata, ...imageMetadata(await uploadImage(content)) } };
+            if (content.startsWith("data:image/")) return { ...node, metadata: { ...node.metadata, ...imageMetadata(await uploadImage(content)) } };
+            if (!node.metadata?.remoteUrl) return node;
+            try {
+                const image = await uploadImage(node.metadata.remoteUrl);
+                return { ...node, metadata: { ...node.metadata, ...imageMetadata(image), remoteUrl: node.metadata.remoteUrl, generationStatus: "stored", failureStage: undefined, persistenceError: undefined } };
+            } catch {
+                return node;
+            }
         }),
     );
 }

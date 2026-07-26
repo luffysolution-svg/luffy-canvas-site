@@ -459,7 +459,7 @@ function requestedImageResponseFormat(config: AiConfig, model: string) {
     const channel = resolveModelChannel(config, model);
     if (channel.apiFormat === "gemini" || channel.apiFormat === "qwen") return undefined;
     if (channel.imageResponseFormat !== "auto") return channel.imageResponseFormat;
-    return channel.provider === "openai" ? "b64_json" : "url";
+    return "b64_json";
 }
 
 function aiHeaders(config: Pick<AiConfig, "apiKey" | "authType">, contentType?: string) {

@@ -77,6 +77,25 @@ describe("remote image downloads", () => {
         );
     });
 
+    it("falls back to the same-origin proxy after a direct HTTP error", async () => {
+        const image = new Blob(["image"], { type: "image/png" });
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(new Response("", { status: 403 }))
+            .mockResolvedValueOnce(new Response(image, { headers: { "content-type": image.type } }));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await expect(downloadImageBlob("https://images.example/forbidden.png")).resolves.toEqual(image);
+        expect(fetchMock).toHaveBeenNthCalledWith(
+            2,
+            "/api/images/proxy",
+            expect.objectContaining({
+                method: "POST",
+                body: JSON.stringify({ url: "https://images.example/forbidden.png" }),
+            }),
+        );
+    });
+
     it("returns the proxy error when the host is not configured", async () => {
         vi.stubGlobal(
             "fetch",
