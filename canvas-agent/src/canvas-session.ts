@@ -2,12 +2,22 @@ import crypto from "node:crypto";
 import type { ServerResponse } from "node:http";
 
 import { type ToolName } from "./schemas.js";
-import { compactCanvasState, compactNode, isToolName, nextCanvasX, parseToolInput } from "./tools.js";
+import { compactCanvasMutationResult, compactCanvasState, compactNode, isToolName, nextCanvasX, parseToolInput } from "./tools.js";
 import type { AgentAttachment, CanvasNode, CanvasNodeType, CanvasSnapshot } from "./types.js";
 
-type PendingRequest = { clientId: string; resolve: (value: unknown) => void; reject: (error: Error) => void };
+type PendingRequest = {
+    clientId: string;
+    expiresAt: number;
+    phase: "awaiting-approval" | "executing";
+    timer: ReturnType<typeof setTimeout>;
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+};
+type EventStreamAuth = { credentialId: string; expiresAt: number; isValid: () => boolean };
+type CanvasSessionOptions = { approvalTimeoutMs?: number; executionTimeoutMs?: number };
 type TurnAttachment = { clientId: string; id: string; name: string; type: string; size: number; width: number; height: number; dataUrl: string };
 export type CodexState = { busy: boolean; threadId: string; turnId: string };
+export type AgentState = { busy: boolean; sessionId: string; turnId: string };
 
 const SITE_TOOLS = new Set<ToolName>([
     "site_navigate",
@@ -24,6 +34,8 @@ const SITE_TOOLS = new Set<ToolName>([
 
 export class CanvasSession {
     private clients = new Map<string, ServerResponse>();
+    private eventStreams = new Set<ServerResponse>();
+    private clientCredentials = new Map<string, string>();
     private clientFocusOrder = new Map<string, number>();
     private pending = new Map<string, PendingRequest>();
     private canvasStates = new Map<string, CanvasSnapshot>();
@@ -31,7 +43,14 @@ export class CanvasSession {
     private activeClientId = "";
     private boundClientId = "";
     private focusSequence = 0;
-    private codexState: CodexState = { busy: false, threadId: "", turnId: "" };
+    private agentStates = new Map<string, AgentState>([["codex", { busy: false, sessionId: "", turnId: "" }]]);
+    private readonly approvalTimeoutMs: number;
+    private readonly executionTimeoutMs: number;
+
+    constructor(options: CanvasSessionOptions = {}) {
+        this.approvalTimeoutMs = positiveNumber(options.approvalTimeoutMs, 45_000);
+        this.executionTimeoutMs = positiveNumber(options.executionTimeoutMs, 120_000);
+    }
 
     private get canvasState() {
         return this.canvasStates.get(this.targetClientId) || null;
@@ -42,46 +61,104 @@ export class CanvasSession {
     }
 
     health() {
-        return { ok: true, hasCanvas: Boolean(this.canvasState), clients: this.clients.size, codexBusy: this.codexState.busy };
+        return { ok: true, hasCanvas: Boolean(this.canvasState), clients: this.clients.size, agentBusy: [...this.agentStates.values()].some((state) => state.busy), codexBusy: this.codexBusy };
     }
 
     get codexBusy() {
-        return this.codexState.busy;
+        return this.getAgentState("codex").busy;
+    }
+
+    get agentBusy() {
+        return [...this.agentStates.values()].some((state) => state.busy);
     }
 
     setCodexState(patch: Partial<CodexState>) {
-        this.codexState = { ...this.codexState, ...patch };
-        this.emitAll("codex_state", this.codexState);
+        this.setAgentState("codex", {
+            ...(patch.busy === undefined ? {} : { busy: patch.busy }),
+            ...(patch.threadId === undefined ? {} : { sessionId: patch.threadId }),
+            ...(patch.turnId === undefined ? {} : { turnId: patch.turnId }),
+        });
     }
 
-    openEvents(url: URL, res: ServerResponse) {
+    getAgentState(provider: string) {
+        return this.agentStates.get(provider) || { busy: false, sessionId: "", turnId: "" };
+    }
+
+    setAgentState(provider: string, patch: Partial<AgentState>) {
+        const state = { ...this.getAgentState(provider), ...patch };
+        this.agentStates.set(provider, state);
+        this.emitAll("agent_state", { provider, ...state });
+        if (provider === "codex") this.emitAll("codex_state", { busy: state.busy, threadId: state.sessionId, turnId: state.turnId });
+    }
+
+    openEvents(url: URL, res: ServerResponse, auth?: EventStreamAuth) {
         const clientId = url.searchParams.get("clientId") || crypto.randomUUID();
         const statusOnly = url.searchParams.get("role") === "status";
+        this.eventStreams.add(res);
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
         if (!statusOnly) {
             this.clients.set(clientId, res);
+            if (auth?.credentialId) this.clientCredentials.set(clientId, auth.credentialId);
             if (!this.clientFocusOrder.has(clientId)) this.clientFocusOrder.set(clientId, 0);
             if (!this.activeClientId) {
                 this.activeClientId = clientId;
                 this.clientFocusOrder.set(clientId, ++this.focusSequence);
             }
         }
-        sendEvent(res, "hello", { ok: true, clientId, codex: this.codexState });
-        const timer = setInterval(() => sendEvent(res, "ping", { time: Date.now() }), 15000);
+        const agents = Object.fromEntries(this.agentStates);
+        const codex = this.getAgentState("codex");
+        sendEvent(res, "hello", { ok: true, clientId, agents, codex: { busy: codex.busy, threadId: codex.sessionId, turnId: codex.turnId } });
+        const timer = setInterval(() => {
+            if (auth && !auth.isValid()) return void res.end();
+            sendEvent(res, "ping", { time: Date.now() });
+        }, 15000);
+        const expiryTimer = auth ? setTimeout(() => res.end(), Math.max(1, auth.expiresAt - Date.now())) : null;
         res.on("close", () => {
             clearInterval(timer);
+            if (expiryTimer) clearTimeout(expiryTimer);
+            this.eventStreams.delete(res);
             if (statusOnly || this.clients.get(clientId) !== res) return;
             this.clients.delete(clientId);
+            this.clientCredentials.delete(clientId);
             this.clientFocusOrder.delete(clientId);
             this.canvasStates.delete(clientId);
             if (this.boundClientId === clientId) this.boundClientId = "";
             this.pending.forEach((item, requestId) => {
-                if (item.clientId !== clientId) return;
+                if (item.clientId !== clientId || item.phase === "executing") return;
                 this.pending.delete(requestId);
+                clearTimeout(item.timer);
                 item.reject(new Error("请求页面已断开"));
             });
             if (this.activeClientId === clientId) this.activeClientId = [...this.clients.keys()].sort((a, b) => (this.clientFocusOrder.get(b) || 0) - (this.clientFocusOrder.get(a) || 0))[0] || "";
         });
+    }
+
+    closeEventsForCredential(credentialId: string) {
+        if (!credentialId) return 0;
+        let closed = 0;
+        this.clientCredentials.forEach((value, clientId) => {
+            if (value !== credentialId) return;
+            this.clients.get(clientId)?.end();
+            closed += 1;
+        });
+        return closed;
+    }
+
+    closeAllEvents() {
+        const streams = [...this.eventStreams];
+        streams.forEach((stream) => stream.end());
+        return streams.length;
+    }
+
+    shutdown() {
+        const closed = this.closeAllEvents();
+        this.pending.forEach((item) => {
+            clearTimeout(item.timer);
+            item.reject(new Error("Luffy Canvas Agent 已停止"));
+        });
+        this.pending.clear();
+        this.turnAttachments.clear();
+        return closed;
     }
 
     updateState(body: unknown, clientId?: string) {
@@ -142,7 +219,22 @@ export class CanvasSession {
         const item = body.requestId ? this.pending.get(body.requestId) : null;
         if (!item || !body.requestId || item.clientId !== clientId) return false;
         this.pending.delete(body.requestId);
+        clearTimeout(item.timer);
         body.error ? item.reject(new Error(body.error)) : item.resolve(body.result);
+        return true;
+    }
+
+    claimRequest(clientId: string, requestId: string) {
+        const item = this.pending.get(requestId);
+        if (!item || item.clientId !== clientId || item.phase !== "awaiting-approval" || item.expiresAt <= Date.now()) return false;
+        clearTimeout(item.timer);
+        item.phase = "executing";
+        item.expiresAt = Date.now() + this.executionTimeoutMs;
+        item.timer = setTimeout(() => {
+            if (this.pending.get(requestId) !== item) return;
+            this.pending.delete(requestId);
+            item.reject(new Error("画布操作执行超时，执行结果未知；请先检查画布或生成状态，不要自动重试"));
+        }, this.executionTimeoutMs);
         return true;
     }
 
@@ -227,7 +319,7 @@ export class CanvasSession {
             input = {
                 ops: data.items.map((item) => {
                     const current = findNode(this.canvasState, item.id);
-                    return { type: "update_node", id: item.id, patch: { position: { x: item.x ?? ((current?.position.x || 0) + (item.dx || 0)), y: item.y ?? ((current?.position.y || 0) + (item.dy || 0)) } } };
+                    return { type: "update_node", id: item.id, patch: { position: { x: item.x ?? (current?.position.x || 0) + (item.dx || 0), y: item.y ?? (current?.position.y || 0) + (item.dy || 0) } } };
                 }),
             };
             tool = "canvas_apply_ops";
@@ -261,7 +353,7 @@ export class CanvasSession {
         }
         if (tool !== "canvas_apply_ops") throw new Error(`未知工具：${tool}`);
         if (!this.clients.size) throw new Error("当前没有已连接画布");
-        return await this.requestCanvasTool(tool, input);
+        return compactCanvasMutationResult(await this.requestCanvasTool(tool, input));
     }
 
     private async createAttachmentNodes(input: { attachmentIds: string[]; x?: number; y?: number; gap?: number; direction?: "row" | "column" }) {
@@ -295,14 +387,23 @@ export class CanvasSession {
         const clientId = this.targetClientId;
         const client = this.clients.get(clientId);
         if (!client) throw new Error("当前没有已连接画布");
-        sendEvent(client, "tool_call", { requestId, name, input });
-        return await new Promise((resolve, reject) => {
+        const expiresAt = Date.now() + this.approvalTimeoutMs;
+        const result = new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pending.delete(requestId);
-                reject(new Error("画布操作超时"));
-            }, 30000);
-            this.pending.set(requestId, { clientId, resolve: (value) => (clearTimeout(timer), resolve(value)), reject: (error) => (clearTimeout(timer), reject(error)) });
+                reject(new Error("画布操作等待确认超时"));
+            }, this.approvalTimeoutMs);
+            this.pending.set(requestId, {
+                clientId,
+                expiresAt,
+                phase: "awaiting-approval",
+                timer,
+                resolve,
+                reject,
+            });
         });
+        sendEvent(client, "tool_call", { requestId, name, input, expiresAt });
+        return await result;
     }
 }
 
