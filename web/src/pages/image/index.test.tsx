@@ -197,6 +197,8 @@ describe("ImagePage", () => {
         await user.type(screen.getByPlaceholderText("描述画面主体、风格、构图、光线和用途"), "一张远程图片");
         await user.click(screen.getByRole("button", { name: "开始生成" }));
         expect(await screen.findByText("仅远程")).toBeInTheDocument();
+        expect(screen.getByRole("link", { name: "打开原图" })).toHaveAttribute("href", remoteUrl);
+        expect(screen.getByRole("link", { name: "打开原图" })).toHaveAttribute("target", "_blank");
 
         await user.click(screen.getByRole("button", { name: "保存到本地" }));
 

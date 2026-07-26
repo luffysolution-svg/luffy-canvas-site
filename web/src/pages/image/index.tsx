@@ -299,10 +299,6 @@ export default function ImagePage() {
         }
     };
 
-    const openOriginalImage = (image: GeneratedImage) => {
-        if (image.remoteUrl) window.open(image.remoteUrl, "_blank", "noopener,noreferrer");
-    };
-
     const copyImageLink = (image: GeneratedImage) => {
         if (image.remoteUrl) copyText(image.remoteUrl, "图片链接已复制");
     };
@@ -699,7 +695,6 @@ export default function ImagePage() {
                                             onEdit={addResultToReferences}
                                             onDownload={downloadImage}
                                             onSaveAsset={saveResultToAssets}
-                                            onOpenOriginal={openOriginalImage}
                                             onCopyLink={copyImageLink}
                                             onSaveLocal={saveResultLocally}
                                         />
@@ -781,7 +776,6 @@ function ResultImageCard({
     onEdit,
     onDownload,
     onSaveAsset,
-    onOpenOriginal,
     onCopyLink,
     onSaveLocal,
 }: {
@@ -792,7 +786,6 @@ function ResultImageCard({
     onEdit: (image: GeneratedImage, index: number) => void | Promise<void>;
     onDownload: (image: GeneratedImage, index: number) => void | Promise<void>;
     onSaveAsset: (image: GeneratedImage, index: number) => void | Promise<void>;
-    onOpenOriginal: (image: GeneratedImage) => void;
     onCopyLink: (image: GeneratedImage) => void;
     onSaveLocal: (image: GeneratedImage, index: number) => void | Promise<void>;
 }) {
@@ -815,7 +808,7 @@ function ResultImageCard({
                 {remote ? (
                     <div className="grid min-w-0 grid-cols-2 gap-2">
                         <Tooltip title="在新窗口打开远程原图">
-                            <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<ExternalLink className="size-3.5" />} disabled={actionsDisabled} onClick={() => onOpenOriginal(image)}>
+                            <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<ExternalLink className="size-3.5" />} disabled={actionsDisabled} href={image.remoteUrl} target="_blank" rel="noopener noreferrer">
                                 打开原图
                             </Button>
                         </Tooltip>
