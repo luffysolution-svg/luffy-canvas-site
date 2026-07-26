@@ -3,7 +3,7 @@
 ## MCP 工具不存在
 
 - 确认 MCP Server ID 是 `luffy-canvas`。
-- 确认命令使用 `@luffysolution/canvas-agent`，或使用当前仓库构建产物的绝对路径。
+- 确认命令使用 `@luffysolution/canvas-agent@0.2.0`；调试当前源码时才使用仓库构建产物的绝对路径。
 - 检查当前 Profile；缺失工具可能是权限过滤的预期结果。
 - 安装或更新 Codex 插件后新建任务，使 Skills 和 MCP 重新加载。
 

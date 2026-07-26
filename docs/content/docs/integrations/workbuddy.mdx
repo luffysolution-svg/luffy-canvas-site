@@ -9,25 +9,7 @@ WorkBuddy 的定位是标准 MCP 客户端。Luffy Canvas 不在网页侧边栏�
 
 ## MCP 配置
 
-当前 npm 包尚未完成发布权限验证时，先进入仓库的 `canvas-agent` 目录，依次执行 `npm ci`、`npm run build`，再把下面配置加入 WorkBuddy：
-
-```json
-{
-  "mcpServers": {
-    "luffy-canvas": {
-      "command": "node",
-      "args": [
-        "/absolute/path/to/luffy-canvas-site/canvas-agent/dist/index.js",
-        "mcp",
-        "--profile",
-        "editor"
-      ]
-    }
-  }
-}
-```
-
-registry 已确认目标版本归本项目维护者所有后，可改用固定版本：
+将已公开发布的固定版本加入 WorkBuddy：
 
 ```json
 {
@@ -46,9 +28,11 @@ registry 已确认目标版本归本项目维护者所有后，可改用固定�
 }
 ```
 
+开发当前仓库源码时，可先在 `canvas-agent` 目录执行 `npm ci`、`npm run build`，再将 `command` 改为 `node`，并将 `args` 改为 `["/absolute/path/to/luffy-canvas-site/canvas-agent/dist/index.js", "mcp", "--profile", "editor"]`。
+
 ## 启动画布连接
 
-1. 另开终端运行普通 Agent：`node /absolute/path/to/luffy-canvas-site/canvas-agent/dist/index.js`。
+1. 另开终端运行普通 Agent：`npx -y @luffysolution/canvas-agent@0.2.0`。
 2. 打开 Luffy Canvas，使用 Agent 输出的短期 pairing code 完成配对。
 3. 确认 WorkBuddy 已加载 `luffy-canvas` MCP，并先调用读取工具检查当前画布。
 4. 写操作在网页审批；WorkBuddy 自身的 MCP 审批仍独立生效。

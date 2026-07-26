@@ -29,13 +29,13 @@ Windows PowerShell 将 `"$(pwd)"` 换成 `"$PWD"`。安装或更新后新建 Cod
 
 ## 手动添加 MCP
 
-npm 包发布后可执行：
+使用已公开发布的固定版本：
 
 ```bash
 codex mcp add luffy-canvas -- npx -y @luffysolution/canvas-agent@0.2.0 mcp --profile editor
 ```
 
-若 npm registry 尚无该包或版本，先构建仓库，再使用绝对路径：
+开发当前仓库源码时，先构建仓库，再使用绝对路径：
 
 ```bash
 cd canvas-agent

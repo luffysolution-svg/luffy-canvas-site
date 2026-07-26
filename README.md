@@ -46,7 +46,7 @@ Agent 与客户端配置见：
 - [Claude Code](docs/content/docs/integrations/claude-code.mdx)
 - [WorkBuddy](docs/content/docs/integrations/workbuddy.mdx)
 
-`@luffysolution/canvas-agent` 尚未发布到 npm 时，请按文档使用当前仓库构建产物的绝对路径，不要回退到上游包。
+[`@luffysolution/canvas-agent@0.2.0`](https://www.npmjs.com/package/@luffysolution/canvas-agent) 已公开发布；按集成文档使用固定版本启动 Agent 和 MCP。
 
 ## 许可与来源
 

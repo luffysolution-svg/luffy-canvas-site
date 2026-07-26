@@ -6,13 +6,13 @@ The service listens on `127.0.0.1` only. Browser access uses a one-time pairing 
 
 ## Install and start
 
-After npm shows version `0.2.0` as a verified Luffy Canvas release:
+Run the published Luffy Canvas release:
 
 ```bash
 npx -y @luffysolution/canvas-agent@0.2.0
 ```
 
-Until then, clone this repository, run `npm ci` and `npm run build` in `canvas-agent`, and start `node dist/index.js`. Do not substitute the upstream package.
+To develop the current repository instead, run `npm ci` and `npm run build` in `canvas-agent`, then start `node dist/index.js`.
 
 The terminal prints:
 

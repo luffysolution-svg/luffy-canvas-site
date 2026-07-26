@@ -9,19 +9,19 @@ description: 打开、启动、进入或连接 Luffy Canvas 在线或本地画�
 
 ## 打开与配对
 
-1. 检查 Luffy Canvas Agent 是否已在 `127.0.0.1` 运行。当前 npm 包尚未完成发布权限验证时，先从插件所在仓库构建并启动：
+1. 检查 Luffy Canvas Agent 是否已在 `127.0.0.1` 运行。未运行时使用已公开发布的固定版本启动：
+
+```bash
+npx -y @luffysolution/canvas-agent@0.2.0
+```
+
+仅在用户明确要求调试当前仓库源码时，才从插件所在仓库构建并启动：
 
 ```bash
 cd /absolute/path/to/luffy-canvas-site/canvas-agent
 npm ci
 npm run build
 node dist/index.js
-```
-
-只有 registry 已显示由 `luffysolution-svg` 发布的目标版本后，才可改用固定版本：
-
-```bash
-npx -y @luffysolution/canvas-agent@0.2.0
 ```
 
 2. 从 Agent 启动输出取得短期、一次性的 pairing code。不要读取、打印或复用旧永久 token。

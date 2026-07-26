@@ -5,7 +5,7 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 # 待测试
 
-- Luffy Canvas 插件迁移：移除旧 `infinite-canvas` 插件、MCP 和 marketplace 后，安装 `luffy-canvas@luffy-canvas-local`；新任务应只加载 `open-luffy-canvas`、`operate-luffy-canvas` 和 `luffy-canvas` MCP，npm 未发布环境可使用本地构建绝对路径。
+- Luffy Canvas 插件迁移与 npm 包：移除旧 `infinite-canvas` 插件、MCP 和 marketplace 后，安装 `luffy-canvas@luffy-canvas-local`；新任务应只加载 `open-luffy-canvas`、`operate-luffy-canvas` 和 `luffy-canvas` MCP。验证 `npx -y @luffysolution/canvas-agent@0.2.0` 可启动网页 Agent，固定版本的 `mcp --profile editor` 可被标准 MCP 客户端加载。
 - Agent 安全连接：验证 pairing code 成功、重复使用失败、过期失败，session token 过期和撤销有效，非允许 Origin 被拒绝；URL、Referrer、日志和永久 `localStorage` 中均不得出现长期 token，自动连接不得关闭写操作确认；MCP 读写结果不得包含媒体 dataURL、签名地址或浏览器存储键，退出 Agent 后不得残留审批租约或 Provider 子进程。
 - MCP Profile：分别验证 `readonly`、`editor`、`generator`、`assets`、`full` 的 `tools/list` 和输入级权限；`editor` 不得通过 `autoRun` 或 `run_generation` 触发生成，删除、生成、附件和素材写入仍需网页确认。
 - Agent Provider：验证 Codex 与 Claude Code 可用性、会话和运行状态隔离；Claude CLI 不存在时显示安装提示，不支持的历史/附件能力正确禁用；WorkBuddy 按标准 MCP 配置可读取和编辑已配对画布。

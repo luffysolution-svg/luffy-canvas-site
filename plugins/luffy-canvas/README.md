@@ -36,7 +36,13 @@ codex plugin add luffy-canvas@luffy-canvas-local
 
 下面的命令启动供网页连接的本地 HTTP/SSE Agent；插件内置 MCP wrapper 启动 stdio MCP Server。完整控制链路需要网页 Agent 已配对，并有一个 MCP 客户端连接 stdio Server。
 
-`@luffysolution/canvas-agent` 尚未发布到 npm 时，不要回退到上游包。使用刚构建的仓库路径：
+使用已公开发布的固定版本启动网页 Agent：
+
+```bash
+npx -y @luffysolution/canvas-agent@0.2.0
+```
+
+开发当前仓库源码时可改用本地构建产物：
 
 ```bash
 cd canvas-agent
@@ -44,8 +50,6 @@ npm ci
 npm run build
 node dist/index.js
 ```
-
-npm registry 已确认目标版本归本项目维护者所有后，也可使用固定版本 `@luffysolution/canvas-agent@0.2.0`。
 
 ## 从旧插件迁移
 

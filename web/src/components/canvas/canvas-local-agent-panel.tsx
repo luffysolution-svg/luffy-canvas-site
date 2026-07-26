@@ -39,7 +39,7 @@ const SCROLL_BOTTOM_THRESHOLD = 48;
 const DEFAULT_AGENT_URL = "http://127.0.0.1:17371";
 const AGENT_CONNECT_STEPS = [
     { title: "方式一：在 Codex 中使用插件", text: "安装 Luffy Canvas 插件后，通过插件启动本地 Agent，并使用终端显示的一次性配对码连接网页。" },
-    { title: "方式二：直接运行 Agent", text: "当前 npm 包发布权限尚未验证，请先按集成文档构建仓库，再运行下面的本地入口。", command: "node /absolute/path/to/luffy-canvas-site/canvas-agent/dist/index.js" },
+    { title: "方式二：直接运行 Agent", text: "使用已公开发布的固定版本启动本地 Agent，再用终端显示的一次性配对码连接网页。", command: "npx -y @luffysolution/canvas-agent@0.2.0" },
 ];
 const AGENT_PLUGIN_REMOVE_COMMAND = "codex plugin remove luffy-canvas";
 const AGENT_MCP_REMOVE_COMMAND = "codex mcp remove luffy-canvas";

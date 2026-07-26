@@ -14,7 +14,7 @@ mcp 进程 -> stdio MCP Server    -> Codex、Claude Code、WorkBuddy 等客户�
 
 单独运行其中一个不能完成完整网页控制链路。MCP 使用标准 `@modelcontextprotocol/sdk` 和 stdio transport，不依赖 Codex 私有协议。
 
-## npm 发布后的标准配置
+## 标准配置
 
 ```json
 {
@@ -35,7 +35,7 @@ mcp 进程 -> stdio MCP Server    -> Codex、Claude Code、WorkBuddy 等客户�
 }
 ```
 
-只有 npm registry 已确认目标版本归本项目维护者所有时才使用上述 `npx` 配置。否则使用当前仓库构建产物，不要回退到上游包：
+开发当前仓库源码时，可使用本地构建产物：
 
 ```bash
 cd canvas-agent

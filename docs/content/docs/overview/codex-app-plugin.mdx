@@ -32,9 +32,9 @@ codex plugin marketplace remove luffy-canvas-site-local
 
 旧项不存在时忽略对应提示，然后重新注册当前仓库 marketplace。
 
-## npm 发布前调试
+## 本地源码调试
 
-若 npm registry 尚无 `@luffysolution/canvas-agent` 或目标版本，先构建本仓库：
+需要调试当前仓库中的 Agent 源码时，先构建本仓库：
 
 ```bash
 cd canvas-agent
@@ -45,7 +45,7 @@ codex mcp add luffy-canvas -- node /absolute/path/to/luffy-canvas-site/canvas-ag
 node dist/index.js
 ```
 
-普通 `node dist/index.js` 提供网页连接；带 `mcp` 的进程提供 stdio 工具。不要回退到上游 npm 包。
+普通 `node dist/index.js` 提供网页连接；带 `mcp` 的进程提供 stdio 工具。日常使用请改用已发布的 `@luffysolution/canvas-agent@0.2.0`。
 
 ## 安全连接
 
