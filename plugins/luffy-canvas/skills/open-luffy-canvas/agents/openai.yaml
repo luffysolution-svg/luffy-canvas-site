@@ -1,0 +1,4 @@
+interface:
+  display_name: "Open Luffy Canvas"
+  short_description: "Start and securely pair a Luffy Canvas workspace"
+  default_prompt: "Use $open-luffy-canvas to start and securely pair a Luffy Canvas workspace."

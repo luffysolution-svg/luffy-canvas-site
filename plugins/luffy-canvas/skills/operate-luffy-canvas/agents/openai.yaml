@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operate Luffy Canvas"
+  short_description: "Inspect, edit, arrange, and generate canvas content"
+  default_prompt: "Use $operate-luffy-canvas to inspect the current canvas and complete my requested edits."
