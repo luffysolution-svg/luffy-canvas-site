@@ -1,13 +1,16 @@
 import axios from "axios";
 
-import { assertModelChannelAvailable, buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { assertModelChannelAvailable, buildApiUrl, resolveModelChannel, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
-import { dataUrlToFile, getDataUrlByteSize } from "@/lib/image-utils";
+import { getDataUrlByteSize } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
-import { imageToDataUrl } from "@/services/image-storage";
-import type { ReferenceImage } from "@/types/image";
+import { imageToDataUrl, imageToFile } from "@/services/image-storage";
+import type { ImageGenerationOutput, ImageProviderMetadata, ReferenceImage } from "@/types/image";
 import { qwenApiUrl, qwenCompatibleApiUrl } from "./provider-urls";
+import { classifyImageGenerationError, ImageGenerationError, retryImageRequest } from "./image-errors";
+
+export { IMAGE_REQUEST_UNKNOWN_MESSAGE, ImageRequestUnknownError } from "./image-errors";
 
 export type AiTextMessage = {
     role: "system" | "user" | "assistant";
@@ -73,14 +76,23 @@ type ImageApiResponse = {
     error?: { message?: string };
     code?: number;
     msg?: string;
+    id?: string;
+    task_id?: string;
+    taskId?: string;
+    request_id?: string;
+    requestId?: string;
+    expires_at?: number | string;
+    expiresAt?: number | string;
 };
 type QwenImagePayload = {
     output?: {
         choices?: Array<{ message?: { content?: Array<{ image?: string }> } }>;
         results?: Array<{ url?: string }>;
+        task_id?: string;
     };
     code?: string;
     message?: string;
+    request_id?: string;
 };
 type GeminiPart = {
     text?: string;
@@ -100,16 +112,7 @@ type GeminiPayload = {
     promptFeedback?: { blockReason?: string };
 };
 type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; error?: string };
-type RequestOptions = { signal?: AbortSignal };
-
-export const IMAGE_REQUEST_UNKNOWN_MESSAGE = "请求没有返回可读取的响应，无法确认是否已生成。服务端可能已执行并产生费用，请先到渠道日志核对，暂勿直接重试。";
-
-export class ImageRequestUnknownError extends Error {
-    constructor() {
-        super(IMAGE_REQUEST_UNKNOWN_MESSAGE);
-        this.name = "ImageRequestUnknownError";
-    }
-}
+export type RequestOptions = { signal?: AbortSignal };
 
 const QUALITY_BASE: Record<string, number> = {
     low: 1024,
@@ -343,31 +346,85 @@ function resolveGeminiImageSize(quality: string, dimensions: { width: number; he
     return supportedSizes.reduce((best, item) => (Math.abs(GEMINI_IMAGE_SIZE_PIXELS[item] - requestedPixels) < Math.abs(GEMINI_IMAGE_SIZE_PIXELS[best] - requestedPixels) ? item : best));
 }
 
-function resolveImageDataUrl(item: Record<string, unknown>) {
-    if (typeof item.b64_json === "string" && item.b64_json) {
-        return item.b64_json.startsWith("data:") ? item.b64_json : `data:image/png;base64,${item.b64_json}`;
-    }
+function resolveImageOutput(item: Record<string, unknown>, metadata: ImageProviderMetadata): ImageGenerationOutput | null {
+    const itemMetadata = {
+        expiresAt: readExpiry(item.expires_at ?? item.expiresAt) ?? metadata.expiresAt,
+        providerTaskId: stringField(item.task_id ?? item.taskId) || metadata.providerTaskId,
+        providerRequestId: stringField(item.request_id ?? item.requestId) || metadata.providerRequestId,
+    };
+    const mimeType = stringField(item.mime_type ?? item.mimeType) || undefined;
     if (typeof item.url === "string" && item.url) {
-        return item.url;
+        return { id: nanoid(), status: "remote_only", source: "remote_url", remoteUrl: item.url, mimeType, ...itemMetadata };
+    }
+    if (typeof item.b64_json === "string" && item.b64_json) {
+        const dataUrl = item.b64_json.startsWith("data:") ? item.b64_json : `data:${mimeType || "image/png"};base64,${item.b64_json}`;
+        return { id: nanoid(), status: "generated", source: "data_url", dataUrl, mimeType: mimeType || dataUrl.match(/^data:([^;,]+)/)?.[1], ...itemMetadata };
+    }
+    if (typeof item.dataUrl === "string" && item.dataUrl) {
+        return imageOutputFromString(item.dataUrl, itemMetadata);
     }
     return null;
 }
 
-function parseImagePayload(payload: ImageApiResponse) {
+function parseImagePayload(payload: ImageApiResponse, headers?: unknown) {
     if (typeof payload.code === "number" && payload.code !== 0) {
         throw new Error(payload.msg || "请求失败");
     }
+    const metadata = responseProviderMetadata(payload, headers);
     const images =
         payload.data
-            ?.map(resolveImageDataUrl)
-            .filter((value): value is string => Boolean(value))
-            .map((dataUrl) => ({ id: nanoid(), dataUrl })) || [];
+            ?.map((item) => resolveImageOutput(item, metadata))
+            .filter((value): value is ImageGenerationOutput => Boolean(value)) || [];
 
     if (images.length === 0) {
-        throw new Error("接口没有返回图片");
+        throw new ImageGenerationError("接口没有返回图片", { failureStage: "response_parse", kind: "response_parse" });
     }
 
     return images;
+}
+
+function imageOutputFromString(value: string, metadata: ImageProviderMetadata = {}): ImageGenerationOutput {
+    if (/^https?:\/\//i.test(value)) return { id: nanoid(), status: "remote_only", source: "remote_url", remoteUrl: value, ...metadata };
+    const dataUrl = value.startsWith("data:") ? value : `data:image/png;base64,${value}`;
+    return { id: nanoid(), status: "generated", source: "data_url", dataUrl, mimeType: dataUrl.match(/^data:([^;,]+)/)?.[1], ...metadata };
+}
+
+function pluginImageOutput(image: ReturnType<typeof normalizePluginImages>[number]): ImageGenerationOutput {
+    const output = imageOutputFromString(image.value, {
+        expiresAt: readExpiry(image.expiresAt),
+        providerTaskId: image.providerTaskId,
+        providerRequestId: image.providerRequestId,
+    });
+    return image.mimeType ? { ...output, mimeType: image.mimeType } : output;
+}
+
+function responseProviderMetadata(payload: ImageApiResponse, headers?: unknown): ImageProviderMetadata {
+    return {
+        expiresAt: readExpiry(payload.expires_at ?? payload.expiresAt),
+        providerTaskId: stringField(payload.task_id ?? payload.taskId ?? payload.id) || undefined,
+        providerRequestId: stringField(payload.request_id ?? payload.requestId) || readHeader(headers, "x-request-id") || readHeader(headers, "request-id") || undefined,
+    };
+}
+
+function stringField(value: unknown) {
+    return typeof value === "string" && value ? value : "";
+}
+
+function readExpiry(value: unknown) {
+    if (typeof value === "number" && Number.isFinite(value)) return value < 10_000_000_000 ? value * 1000 : value;
+    if (typeof value !== "string" || !value) return undefined;
+    const number = Number(value);
+    if (Number.isFinite(number)) return number < 10_000_000_000 ? number * 1000 : number;
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function readHeader(headers: unknown, name: string) {
+    if (!headers || typeof headers !== "object") return "";
+    const getter = (headers as { get?: (key: string) => unknown }).get;
+    if (typeof getter === "function") return stringField(getter.call(headers, name));
+    const record = headers as Record<string, unknown>;
+    return stringField(record[name] ?? record[name.toLowerCase()]);
 }
 
 function readAxiosError(error: unknown, fallback: string) {
@@ -380,12 +437,6 @@ function readAxiosError(error: unknown, fallback: string) {
     if (error instanceof DOMException && error.name === "AbortError") return "请求已取消";
     if (error instanceof TypeError && /fetch|network|load failed/i.test(error.message)) return "无法连接接口，请检查 Base URL、网络连接，以及服务是否允许浏览器跨域（CORS）请求";
     return error instanceof Error ? error.message : fallback;
-}
-
-function readImageGenerationError(error: unknown, fallback: string) {
-    if (axios.isCancel(error) || (error instanceof DOMException && error.name === "AbortError")) return new Error("请求已取消");
-    if ((axios.isAxiosError(error) && !error.response) || (error instanceof TypeError && /fetch|network|load failed/i.test(error.message))) return new ImageRequestUnknownError();
-    return new Error(readAxiosError(error, fallback));
 }
 
 function readStatusError(status: number | undefined, fallback: string) {
@@ -402,6 +453,13 @@ function withSystemPrompt(config: AiConfig, prompt: string) {
 function aiApiUrl(config: AiConfig, path: string) {
     if (config.apiFormat === "qwen") return qwenCompatibleApiUrl(config.baseUrl, path);
     return buildApiUrl(config.baseUrl, path);
+}
+
+function requestedImageResponseFormat(config: AiConfig, model: string) {
+    const channel = resolveModelChannel(config, model);
+    if (channel.apiFormat === "gemini" || channel.apiFormat === "qwen") return undefined;
+    if (channel.imageResponseFormat !== "auto") return channel.imageResponseFormat;
+    return channel.provider === "openai" ? "b64_json" : "url";
 }
 
 function aiHeaders(config: Pick<AiConfig, "apiKey" | "authType">, contentType?: string) {
@@ -745,8 +803,8 @@ function parseGeminiToolResponse(payload: GeminiPayload): ToolResponseResult {
 }
 
 async function requestGeminiImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, options?: RequestOptions) {
-    const requests = Array.from({ length: count }, () => requestGeminiImagesOnce(config, prompt, references, options));
-    return (await Promise.all(requests)).flat();
+    const concurrency = references.length || config.quality.toLowerCase() === "high" || /4k/i.test(config.size) ? 1 : 2;
+    return (await runLimitedRequests(count, concurrency, () => requestGeminiImagesOnce(config, prompt, references, options))).flat();
 }
 
 async function requestGeminiImagesOnce(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
@@ -754,31 +812,57 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
     for (const image of references) {
         parts.push(toGeminiImagePart(await imageToDataUrl(image)));
     }
-    const response = await axios.post<GeminiPayload>(
-        geminiApiUrl(config, "generateContent"),
-        {
-            ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...resolveGeminiImageConfig(config) } }),
-            contents: [{ role: "user", parts }],
-        },
-        { headers: geminiHeaders(config), signal: options?.signal },
+    const response = await retryImageRequest(
+        () =>
+            axios.post<GeminiPayload>(
+                geminiApiUrl(config, "generateContent"),
+                {
+                    ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...resolveGeminiImageConfig(config) } }),
+                    contents: [{ role: "user", parts }],
+                },
+                { headers: geminiHeaders(config), signal: options?.signal },
+            ),
+        { signal: options?.signal },
     );
-    return parseGeminiImagePayload(response.data);
+    return parseGeminiImagePayload(response.data, response.headers);
 }
 
-function parseGeminiImagePayload(payload: GeminiPayload) {
+function parseGeminiImagePayload(payload: GeminiPayload, headers?: unknown) {
     validateGeminiPayload(payload);
+    const metadata: ImageProviderMetadata = {
+        providerRequestId: readHeader(headers, "x-request-id") || readHeader(headers, "x-goog-request-id") || undefined,
+    };
     const images =
         payload.candidates
             ?.flatMap((candidate) => candidate.content?.parts || [])
-            .map((part) => {
+            .map((part): ImageGenerationOutput | null => {
                 const inlineData = part.inlineData || (part.inline_data ? { mimeType: part.inline_data.mimeType || part.inline_data.mime_type, data: part.inline_data.data } : undefined);
-                if (inlineData?.data) return `data:${inlineData.mimeType || "image/png"};base64,${inlineData.data}`;
-                return part.fileData?.fileUri || null;
+                if (part.fileData?.fileUri) return { id: nanoid(), status: "remote_only", source: "remote_url", remoteUrl: part.fileData.fileUri, mimeType: part.fileData.mimeType, ...metadata };
+                if (inlineData?.data) {
+                    const mimeType = inlineData.mimeType || "image/png";
+                    return { id: nanoid(), status: "generated", source: "data_url", dataUrl: `data:${mimeType};base64,${inlineData.data}`, mimeType, ...metadata };
+                }
+                return null;
             })
-            .filter((value): value is string => Boolean(value))
-            .map((dataUrl) => ({ id: nanoid(), dataUrl })) || [];
-    if (!images.length) throw new Error("Gemini 接口没有返回图片");
+            .filter((value): value is ImageGenerationOutput => Boolean(value)) || [];
+    if (!images.length) throw new ImageGenerationError("Gemini 接口没有返回图片", { failureStage: "response_parse", kind: "response_parse" });
     return images;
+}
+
+async function runLimitedRequests<T>(count: number, concurrency: number, request: (index: number) => Promise<T>) {
+    const results = new Array<T>(count);
+    let nextIndex = 0;
+    await Promise.all(
+        Array.from({ length: Math.min(count, concurrency) }, async () => {
+            for (;;) {
+                const index = nextIndex;
+                nextIndex += 1;
+                if (index >= count) return;
+                results[index] = await request(index);
+            }
+        }),
+    );
+    return results;
 }
 
 async function requestQwenImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, size: string | undefined, options?: RequestOptions) {
@@ -797,64 +881,80 @@ async function requestQwenImages(config: AiConfig, prompt: string, references: R
     const isLegacyEdit = (model === "qwen-image-edit" || model.startsWith("qwen-image-edit-")) && !model.includes("qwen-image-edit-max") && !model.includes("qwen-image-edit-plus");
     const batches: number[] = [];
     for (let remaining = count; remaining > 0; remaining -= maxBatchSize) batches.push(Math.min(maxBatchSize, remaining));
-    const requests = batches.map((batchSize) =>
-        axios.post<QwenImagePayload>(
-            qwenApiUrl(config.baseUrl, "services/aigc/multimodal-generation/generation"),
-            {
-                model: config.model,
-                input: { messages: [{ role: "user", content }] },
-                parameters: {
-                    n: batchSize,
-                    ...(!isLegacyEdit && size ? { size: size.replace("x", "*") } : {}),
-                    ...(!isLegacyEdit ? { prompt_extend: true } : {}),
-                    watermark: false,
-                },
-            },
-            { headers: aiHeaders(config, "application/json"), signal: options?.signal },
-        ),
-    );
-    return (await Promise.all(requests)).flatMap((response) => parseQwenImagePayload(response.data)).slice(0, count);
+    const images: ImageGenerationOutput[] = [];
+    for (const batchSize of batches) {
+        const response = await retryImageRequest(
+            () =>
+                axios.post<QwenImagePayload>(
+                    qwenApiUrl(config.baseUrl, "services/aigc/multimodal-generation/generation"),
+                    {
+                        model: config.model,
+                        input: { messages: [{ role: "user", content }] },
+                        parameters: {
+                            n: batchSize,
+                            ...(!isLegacyEdit && size ? { size: size.replace("x", "*") } : {}),
+                            ...(!isLegacyEdit ? { prompt_extend: true } : {}),
+                            watermark: false,
+                        },
+                    },
+                    { headers: aiHeaders(config, "application/json"), signal: options?.signal },
+                ),
+            { signal: options?.signal },
+        );
+        images.push(...parseQwenImagePayload(response.data, response.headers));
+    }
+    return images.slice(0, count);
 }
 
-function parseQwenImagePayload(payload: QwenImagePayload) {
+function parseQwenImagePayload(payload: QwenImagePayload, headers?: unknown) {
     if (payload.code) throw new Error(payload.message || payload.code);
     const urls = [
         ...(payload.output?.choices || []).flatMap((choice) => choice.message?.content || []).map((item) => item.image),
         ...(payload.output?.results || []).map((item) => item.url),
     ].filter((url): url is string => Boolean(url));
-    if (!urls.length) throw new Error("Qwen 接口没有返回图片");
-    return urls.map((dataUrl) => ({ id: nanoid(), dataUrl }));
+    if (!urls.length) throw new ImageGenerationError("Qwen 接口没有返回图片", { failureStage: "response_parse", kind: "response_parse" });
+    const metadata: ImageProviderMetadata = {
+        providerTaskId: payload.output?.task_id,
+        providerRequestId: payload.request_id || readHeader(headers, "x-request-id") || undefined,
+    };
+    return urls.map((url) => imageOutputFromString(url, metadata));
 }
 
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
-    assertModelChannelAvailable(config, config.model || config.imageModel);
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
+    const selectedModel = config.model || config.imageModel;
+    assertModelChannelAvailable(config, selectedModel);
+    const requestConfig = resolveModelRequestConfig(config, selectedModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
-    const script = resolveModelScript(config, config.model || config.imageModel, "image");
+    const responseFormat = requestedImageResponseFormat(config, selectedModel);
+    const script = resolveModelScript(config, selectedModel, "image");
     if (script) {
         const quality = normalizeQuality(config.quality);
         const requestSize = resolveRequestSize(quality, config.size);
         const background = normalizeBackground(config.background);
         try {
-            const result = await runModelPlugin({
-                capability: "image",
-                script,
-                config: requestConfig,
-                prompt: withSystemPrompt(requestConfig, prompt),
-                images: [],
-                params: { size: requestSize, quality, count: n, ...(background ? { background } : {}) },
-                signal: options?.signal,
-            });
-            return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
+            const result = await retryImageRequest(
+                () =>
+                    runModelPlugin({
+                        capability: "image",
+                        script,
+                        config: requestConfig,
+                        prompt: withSystemPrompt(requestConfig, prompt),
+                        images: [],
+                        params: { size: requestSize, quality, count: n, responseFormat, ...(background ? { background } : {}) },
+                        signal: options?.signal,
+                    }),
+                { signal: options?.signal },
+            );
+            return normalizePluginImages(result).map(pluginImageOutput);
         } catch (error) {
-            throw readImageGenerationError(error, "请求失败");
+            throw classifyImageGenerationError(error);
         }
     }
     if (requestConfig.apiFormat === "gemini") {
         try {
             return await requestGeminiImages(requestConfig, prompt, [], n, options);
         } catch (error) {
-            throw readImageGenerationError(error, "请求失败");
+            throw classifyImageGenerationError(error);
         }
     }
     if (requestConfig.apiFormat === "qwen") {
@@ -863,43 +963,49 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
         try {
             return await requestQwenImages(requestConfig, prompt, [], n, requestSize, options);
         } catch (error) {
-            throw readImageGenerationError(error, "请求失败");
+            throw classifyImageGenerationError(error);
         }
     }
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size);
     const background = normalizeBackground(config.background);
     try {
-        const response = await axios.post<ImageApiResponse>(
-            aiApiUrl(requestConfig, "/images/generations"),
-            {
-                model: requestConfig.model,
-                prompt: withSystemPrompt(requestConfig, prompt),
-                n,
-                ...(quality ? { quality } : {}),
-                ...(requestSize ? { size: requestSize } : {}),
-                ...(background ? { background } : {}),
-                response_format: "b64_json",
-                output_format: IMAGE_OUTPUT_FORMAT,
-            },
-            {
-                headers: aiHeaders(requestConfig, "application/json"),
-                signal: options?.signal,
-            },
+        const response = await retryImageRequest(
+            () =>
+                axios.post<ImageApiResponse>(
+                    aiApiUrl(requestConfig, "/images/generations"),
+                    {
+                        model: requestConfig.model,
+                        prompt: withSystemPrompt(requestConfig, prompt),
+                        n,
+                        ...(quality ? { quality } : {}),
+                        ...(requestSize ? { size: requestSize } : {}),
+                        ...(background ? { background } : {}),
+                        ...(responseFormat ? { response_format: responseFormat } : {}),
+                        output_format: IMAGE_OUTPUT_FORMAT,
+                    },
+                    {
+                        headers: aiHeaders(requestConfig, "application/json"),
+                        signal: options?.signal,
+                    },
+                ),
+            { signal: options?.signal },
         );
-        const images = parseImagePayload(response.data);
+        const images = parseImagePayload(response.data, response.headers);
         return images;
     } catch (error) {
-        throw readImageGenerationError(error, "请求失败");
+        throw classifyImageGenerationError(error);
     }
 }
 
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], mask?: ReferenceImage, options?: RequestOptions) {
-    assertModelChannelAvailable(config, config.model || config.imageModel);
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
+    const selectedModel = config.model || config.imageModel;
+    assertModelChannelAvailable(config, selectedModel);
+    const requestConfig = resolveModelRequestConfig(config, selectedModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
-    const script = resolveModelScript(config, config.model || config.imageModel, "image");
+    const responseFormat = requestedImageResponseFormat(config, selectedModel);
+    const script = resolveModelScript(config, selectedModel, "image");
     if (script) {
         const quality = normalizeQuality(config.quality);
         const requestSize = resolveRequestSize(quality, config.size);
@@ -907,19 +1013,23 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
         const maskDataUrl = mask ? await imageToDataUrl(mask) : undefined;
         try {
-            const result = await runModelPlugin({
-                capability: "image",
-                script,
-                config: requestConfig,
-                prompt: withSystemPrompt(requestConfig, requestPrompt),
-                images: refs,
-                mask: maskDataUrl,
-                params: { size: requestSize, quality, count: n, ...(background ? { background } : {}) },
-                signal: options?.signal,
-            });
-            return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
+            const result = await retryImageRequest(
+                () =>
+                    runModelPlugin({
+                        capability: "image",
+                        script,
+                        config: requestConfig,
+                        prompt: withSystemPrompt(requestConfig, requestPrompt),
+                        images: refs,
+                        mask: maskDataUrl,
+                        params: { size: requestSize, quality, count: n, responseFormat, ...(background ? { background } : {}) },
+                        signal: options?.signal,
+                    }),
+                { signal: options?.signal },
+            );
+            return normalizePluginImages(result).map(pluginImageOutput);
         } catch (error) {
-            throw readImageGenerationError(error, "请求失败");
+            throw classifyImageGenerationError(error);
         }
     }
     if (requestConfig.apiFormat === "gemini") {
@@ -927,7 +1037,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         try {
             return await requestGeminiImages(requestConfig, requestPrompt, references, n, options);
         } catch (error) {
-            throw readImageGenerationError(error, "请求失败");
+            throw classifyImageGenerationError(error);
         }
     }
     if (requestConfig.apiFormat === "qwen") {
@@ -937,7 +1047,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         try {
             return await requestQwenImages(requestConfig, requestPrompt, references, n, requestSize, options);
         } catch (error) {
-            throw readImageGenerationError(error, "请求失败");
+            throw classifyImageGenerationError(error);
         }
     }
     const quality = normalizeQuality(config.quality);
@@ -947,7 +1057,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     formData.set("model", requestConfig.model);
     formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
     formData.set("n", String(n));
-    formData.set("response_format", "b64_json");
+    if (responseFormat) formData.set("response_format", responseFormat);
     formData.set("output_format", IMAGE_OUTPUT_FORMAT);
     if (quality) {
         formData.set("quality", quality);
@@ -958,16 +1068,16 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (background) {
         formData.set("background", background);
     }
-    const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
+    const files = await Promise.all(references.map(imageToFile));
     files.forEach((file) => formData.append("image", file));
-    if (mask) formData.set("mask", dataUrlToFile(mask));
+    if (mask) formData.set("mask", await imageToFile(mask));
 
     try {
-        const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal });
-        const images = parseImagePayload(response.data);
+        const response = await retryImageRequest(() => axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal }), { signal: options?.signal });
+        const images = parseImagePayload(response.data, response.headers);
         return images;
     } catch (error) {
-        throw readImageGenerationError(error, "请求失败");
+        throw classifyImageGenerationError(error);
     }
 }
 

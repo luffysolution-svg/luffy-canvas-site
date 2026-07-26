@@ -97,6 +97,7 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
         size: node?.metadata?.size || config.size || defaultConfig.size,
         background: node?.metadata?.background ?? config.background ?? defaultConfig.background,
+        optimizeImageReferences: node?.metadata?.optimizeImageReferences ?? config.optimizeImageReferences,
         videoSeconds: node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds,
         vquality: node?.metadata?.vquality || config.vquality || defaultConfig.vquality,
         videoGenerateAudio: node?.metadata?.generateAudio || config.videoGenerateAudio || defaultConfig.videoGenerateAudio,
@@ -111,7 +112,20 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
 }
 
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
-    return nodes.map((node) => (node.metadata?.status === "loading" ? { ...node, metadata: { ...node.metadata, status: "error" as const, errorDetails: "页面刷新后生成已中断，请重新生成。" } } : node));
+    return nodes.map((node) =>
+        node.metadata?.status === "loading"
+            ? {
+                  ...node,
+                  metadata: {
+                      ...node.metadata,
+                      status: "unknown" as const,
+                      generationStatus: "unknown" as const,
+                      failureStage: "provider_processing" as const,
+                      errorDetails: "页面刷新时生成请求仍在进行，当前无法确认渠道是否已经生成，请先核对渠道任务状态。",
+                  },
+              }
+            : node,
+    );
 }
 
 export function isGenerationCanceled(error: unknown) {

@@ -7,6 +7,8 @@ export type ApiCallFormat = "openai" | "gemini" | "qwen";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 export type ChannelProvider = "openai" | "new-api" | "openai-compatible" | "gemini" | "qwen" | "custom";
 export type ChannelAuthType = "bearer" | "none";
+export type ImageResponseFormat = "auto" | "url" | "b64_json";
+export type ImageBatchMode = "auto" | "native" | "split";
 
 export type ChannelModel = {
     name: string;
@@ -25,6 +27,8 @@ export type ModelChannel = {
     apiKey: string;
     authType: ChannelAuthType;
     apiFormat: ApiCallFormat;
+    imageResponseFormat: ImageResponseFormat;
+    imageBatchMode: ImageBatchMode;
     models: ChannelModel[];
 };
 
@@ -56,6 +60,7 @@ export type AiConfig = {
     background: string;
     count: string;
     canvasImageCount: string;
+    optimizeImageReferences: boolean;
 };
 
 export type WebdavSyncConfig = {
@@ -80,6 +85,8 @@ export type ChannelProviderPreset = {
     apiFormat: ApiCallFormat;
     baseUrl: string;
     authType: ChannelAuthType;
+    imageResponseFormat: ImageResponseFormat;
+    imageBatchMode: ImageBatchMode;
     models: ChannelModel[];
 };
 
@@ -91,6 +98,8 @@ export const channelProviderPresets: ChannelProviderPreset[] = [
         apiFormat: "openai",
         baseUrl: OPENAI_BASE_URL,
         authType: "bearer",
+        imageResponseFormat: "b64_json",
+        imageBatchMode: "native",
         models: [
             { name: "gpt-image-2", capabilities: ["image"] },
             { name: "sora-2", capabilities: ["video"] },
@@ -105,6 +114,8 @@ export const channelProviderPresets: ChannelProviderPreset[] = [
         apiFormat: "openai",
         baseUrl: "",
         authType: "bearer",
+        imageResponseFormat: "auto",
+        imageBatchMode: "auto",
         models: [],
     },
     {
@@ -114,6 +125,8 @@ export const channelProviderPresets: ChannelProviderPreset[] = [
         apiFormat: "openai",
         baseUrl: "",
         authType: "bearer",
+        imageResponseFormat: "auto",
+        imageBatchMode: "auto",
         models: [],
     },
     {
@@ -123,6 +136,8 @@ export const channelProviderPresets: ChannelProviderPreset[] = [
         apiFormat: "gemini",
         baseUrl: GEMINI_BASE_URL,
         authType: "bearer",
+        imageResponseFormat: "auto",
+        imageBatchMode: "split",
         models: [
             { name: "gemini-3.1-flash-image", capabilities: ["image", "text"] },
             { name: "veo-3.1-generate-preview", capabilities: ["video"] },
@@ -135,6 +150,8 @@ export const channelProviderPresets: ChannelProviderPreset[] = [
         apiFormat: "qwen",
         baseUrl: QWEN_BASE_URL,
         authType: "bearer",
+        imageResponseFormat: "url",
+        imageBatchMode: "native",
         models: [
             { name: "qwen-image-2.0-pro", capabilities: ["image"] },
             { name: "wan2.7-t2v-2026-06-12", capabilities: ["video"] },
@@ -148,6 +165,8 @@ export const channelProviderPresets: ChannelProviderPreset[] = [
         apiFormat: "openai",
         baseUrl: "",
         authType: "bearer",
+        imageResponseFormat: "auto",
+        imageBatchMode: "auto",
         models: [],
     },
 ];
@@ -167,6 +186,8 @@ export const defaultConfig: AiConfig = {
             apiKey: "",
             authType: "bearer",
             apiFormat: "openai",
+            imageResponseFormat: "b64_json",
+            imageBatchMode: "native",
             models: [
                 { name: "gpt-image-2", capabilities: ["image"] },
                 { name: "sora-2", capabilities: ["video"] },
@@ -196,6 +217,7 @@ export const defaultConfig: AiConfig = {
     background: "",
     count: "1",
     canvasImageCount: "3",
+    optimizeImageReferences: true,
 };
 
 export const defaultWebdavSyncConfig: WebdavSyncConfig = {
@@ -368,6 +390,7 @@ export function normalizeChannelModels(models: Array<string | ChannelModel> | un
 export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
     const apiFormat = normalizeApiFormat(channel?.apiFormat);
     const provider = normalizeChannelProvider(channel?.provider, apiFormat, channel?.baseUrl);
+    const preset = channelProviderPreset(provider);
     return {
         id: channel?.id?.trim() || nanoid(),
         name: channel?.name?.trim() || "新渠道",
@@ -376,6 +399,8 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         apiKey: channel?.apiKey || "",
         authType: normalizeAuthType(channel?.authType),
         apiFormat,
+        imageResponseFormat: normalizeImageResponseFormat(channel?.imageResponseFormat, preset.imageResponseFormat),
+        imageBatchMode: normalizeImageBatchMode(channel?.imageBatchMode, preset.imageBatchMode),
         models: normalizeChannelModels(channel?.models),
     };
 }
@@ -390,6 +415,8 @@ export function createModelChannelFromPreset(provider: ChannelProvider, options?
         apiKey: "",
         authType: preset.authType,
         apiFormat: preset.apiFormat,
+        imageResponseFormat: preset.imageResponseFormat,
+        imageBatchMode: preset.imageBatchMode,
         models: preset.models,
     });
 }
@@ -510,6 +537,14 @@ function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
 
 function normalizeAuthType(authType: unknown): ChannelAuthType {
     return authType === "none" ? "none" : "bearer";
+}
+
+function normalizeImageResponseFormat(value: unknown, fallback: ImageResponseFormat): ImageResponseFormat {
+    return value === "url" || value === "b64_json" || value === "auto" ? value : fallback;
+}
+
+function normalizeImageBatchMode(value: unknown, fallback: ImageBatchMode): ImageBatchMode {
+    return value === "native" || value === "split" || value === "auto" ? value : fallback;
 }
 
 function normalizeChannelProvider(provider: unknown, apiFormat: ApiCallFormat, baseUrl?: string): ChannelProvider {

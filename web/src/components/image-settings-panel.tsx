@@ -33,7 +33,7 @@ export const imageAspectOptions = aspectOptions.map((item) => ({ value: item.siz
 
 type ImageSettingsPanelProps = {
     config: AiConfig;
-    onConfigChange: (key: "quality" | "size" | "count" | "background", value: string) => void;
+    onConfigChange: <K extends "quality" | "size" | "count" | "background" | "optimizeImageReferences">(key: K, value: AiConfig[K]) => void;
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
@@ -127,6 +127,17 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </div>
                     <span onMouseDown={(event) => event.stopPropagation()}>
                         <Switch size="small" checked={transparentBackground} onChange={(checked) => onConfigChange("background", checked ? "transparent" : "")} />
+                    </span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                    <div className="space-y-0.5">
+                        <SettingTitle color={theme.node.muted}>自动优化参考图</SettingTitle>
+                        <div className="text-xs" style={{ color: theme.node.muted, opacity: 0.75 }}>
+                            仅生成请求用派生图，始终保留原图
+                        </div>
+                    </div>
+                    <span onMouseDown={(event) => event.stopPropagation()}>
+                        <Switch size="small" checked={config.optimizeImageReferences} onChange={(checked) => onConfigChange("optimizeImageReferences", checked)} />
                     </span>
                 </div>
                 <div className="space-y-2.5">
