@@ -161,16 +161,27 @@ async function canvasImageFromOutput(output: ImageGenerationOutput): Promise<{ m
         providerRequestId: output.providerRequestId,
     };
     if (output.source === "remote_url") {
-        return {
-            metadata: {
-                content: output.remoteUrl,
-                remoteUrl: output.remoteUrl,
-                status: NODE_STATUS_SUCCESS,
-                generationStatus: "remote_only",
-                mimeType: output.mimeType,
-                ...providerMetadata,
-            },
-        };
+        try {
+            const uploaded = await uploadImage(output.remoteUrl);
+            return {
+                metadata: { ...imageMetadata(uploaded), remoteUrl: output.remoteUrl, generationStatus: "stored", ...providerMetadata },
+                width: uploaded.width,
+                height: uploaded.height,
+            };
+        } catch (error) {
+            return {
+                metadata: {
+                    content: output.remoteUrl,
+                    remoteUrl: output.remoteUrl,
+                    status: NODE_STATUS_SUCCESS,
+                    generationStatus: "remote_only",
+                    failureStage: error instanceof ImageGenerationError ? error.failureStage : "result_download",
+                    persistenceError: error instanceof Error ? error.message : "远程图片未能保存到本地",
+                    mimeType: output.mimeType,
+                    ...providerMetadata,
+                },
+            };
+        }
     }
     try {
         const uploaded = await uploadImage(output.dataUrl);

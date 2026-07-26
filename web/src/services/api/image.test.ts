@@ -74,6 +74,21 @@ describe("requestGeneration", () => {
         ]);
     });
 
+    it("requests Base64 when the response format is automatic", async () => {
+        let requestBody: Record<string, unknown> = {};
+        server.use(
+            http.post(GENERATION_URL, async ({ request }) => {
+                requestBody = (await request.json()) as Record<string, unknown>;
+                return HttpResponse.json({ data: [{ b64_json: "YXV0bw==" }] });
+            }),
+        );
+
+        const [result] = await requestGeneration(createConfig("auto"), "一只猫");
+
+        expect(requestBody.response_format).toBe("b64_json");
+        expect(result).toMatchObject({ status: "generated", source: "data_url", dataUrl: "data:image/png;base64,YXV0bw==" });
+    });
+
     it("prefers URL when one item contains both URL and b64_json", async () => {
         const remoteUrl = "https://cdn.example.test/preferred.png";
         let remoteFetches = 0;

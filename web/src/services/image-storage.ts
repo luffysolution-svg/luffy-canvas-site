@@ -39,7 +39,6 @@ export async function downloadImageBlob(input: string | Blob) {
     try {
         return await fetchImageBlob(input);
     } catch (error) {
-        if (error instanceof ImageGenerationError) throw error;
         directError = error;
     }
 

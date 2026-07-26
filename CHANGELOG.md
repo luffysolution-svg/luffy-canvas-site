@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [修复] 自定义 OpenAI 生图渠道在自动模式下优先请求 Base64，并让画布远程结果复用同源代理与本地存储链路，避免不安全或受限图片链接导致节点空白。
++ [优化] 画布图片节点快捷工具栏限制最大宽度并支持横向滚动，避免操作过多时铺满或超出可视区。
 + [调整] Canvas Agent、MCP 与 Codex 插件统一迁移到 Luffy Canvas 自有命名，并提供旧插件、MCP 和本地配置的一次性迁移说明。
 + [新增] 新增 `open-luffy-canvas`、`operate-luffy-canvas` Skills，以及 Codex、Claude Code、WorkBuddy 和标准 MCP 接入文档。
 + [新增] MCP 增加分级权限 Profile，网页 Agent 改用短期配对与可撤销会话，并扩展 Codex、Claude Code 多 Provider 接入。

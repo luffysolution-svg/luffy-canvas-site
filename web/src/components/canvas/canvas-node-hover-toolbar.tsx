@@ -106,7 +106,6 @@ export function CanvasNodeHoverToolbar({
     if (!node) return null;
 
     const activeNode = node;
-    const left = viewport.x + (node.position.x + node.width / 2) * viewport.k;
     const top = viewport.y + node.position.y * viewport.k - 14;
     const isImage = node.type === CanvasNodeType.Image;
     const isVideo = node.type === CanvasNodeType.Video;
@@ -191,19 +190,24 @@ export function CanvasNodeHoverToolbar({
     return (
         <>
             <div
-                className="absolute z-[70] flex h-12 -translate-x-1/2 -translate-y-full items-center overflow-visible rounded-[18px] border border-black/10 bg-white text-[15px] text-[#242529] shadow-[0_8px_28px_rgba(15,23,42,.12)]"
-                style={{ left, top }}
-                onMouseEnter={() => onKeep(node.id)}
-                onMouseLeave={() => {
-                    if (!imageToolSettingsOpen) onLeave();
-                }}
-                onMouseDown={(event) => event.stopPropagation()}
-                onPointerDown={(event) => event.stopPropagation()}
+                className="pointer-events-none absolute inset-x-3 z-[70] flex -translate-y-full justify-center"
+                style={{ top }}
             >
-                {toolbarTools.map((tool) => (
-                    <ToolbarAction key={tool.id} {...tool} showLabel={showImageToolLabels} />
-                ))}
-                {hasImage ? <ToolbarAction id="more" title="配置快捷工具" label="更多" icon={<Ellipsis className="size-4" />} active={imageToolSettingsOpen} onClick={openImageToolSettings} showLabel={showImageToolLabels} /> : null}
+                <div
+                    className="thin-scrollbar pointer-events-auto flex h-[52px] w-max items-center overflow-x-auto rounded-[18px] border border-black/10 bg-white text-[15px] text-[#242529] shadow-[0_8px_28px_rgba(15,23,42,.12)] [&>*]:shrink-0"
+                    style={{ maxWidth: "min(100%, 48rem)" }}
+                    onMouseEnter={() => onKeep(node.id)}
+                    onMouseLeave={() => {
+                        if (!imageToolSettingsOpen) onLeave();
+                    }}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onPointerDown={(event) => event.stopPropagation()}
+                >
+                    {toolbarTools.map((tool) => (
+                        <ToolbarAction key={tool.id} {...tool} showLabel={showImageToolLabels} />
+                    ))}
+                    {hasImage ? <ToolbarAction id="more" title="配置快捷工具" label="更多" icon={<Ellipsis className="size-4" />} active={imageToolSettingsOpen} onClick={openImageToolSettings} showLabel={showImageToolLabels} /> : null}
+                </div>
             </div>
             {hasImage ? (
                 <ImageToolSettingsModal
