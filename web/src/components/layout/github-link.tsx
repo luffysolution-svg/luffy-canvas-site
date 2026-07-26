@@ -17,7 +17,7 @@ export function GitHubLink({ className, style }: GitHubLinkProps) {
             target="_blank"
             rel="noreferrer"
             aria-label="GitHub"
-            title="luffy-canvas-site GitHub"
+            title="Luffy Canvas GitHub"
         >
             <GithubOutlined className="text-base" />
         </a>

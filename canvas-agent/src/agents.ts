@@ -17,7 +17,9 @@ type AgentHistoryMessage = { id: string; role: "user" | "assistant" | "tool" | "
 let codexQueue: Promise<unknown> = Promise.resolve();
 let codexApp: CodexAppClient | null = null;
 let codexAppStart: Promise<CodexAppClient> | null = null;
+let codexAppStartingChild: ChildProcess | null = null;
 let codexThreadId = "";
+let codexAppGeneration = 0;
 const canvasAgentMcp = canvasAgentMcpCommand();
 const require = createRequire(import.meta.url);
 
@@ -34,6 +36,25 @@ export async function runCodexTurn(prompt: string, emit: AgentEmit, attachments:
 export function interruptCodexTurn(threadId?: string) {
     if (!codexApp || (threadId && threadId !== codexThreadId)) return false;
     return codexApp.interruptCurrentTurn();
+}
+
+export function shutdownCodexApp(force = false) {
+    const app = codexApp;
+    const starting = codexAppStart;
+    codexApp = null;
+    codexAppStart = null;
+    codexThreadId = "";
+    codexAppGeneration += 1;
+    if (codexAppStartingChild) {
+        terminateAgentChild(codexAppStartingChild, force);
+        codexAppStartingChild = null;
+    }
+    if (app) return app.shutdown(force);
+    if (starting) {
+        void starting.then((client) => client.shutdown(force)).catch(() => undefined);
+        return true;
+    }
+    return false;
 }
 
 async function runCodexTurnNow(prompt: string, emit: AgentEmit, attachments: AgentAttachment[], options: CodexRunOptions) {
@@ -109,7 +130,7 @@ export async function archiveCodexThread(emit: AgentEmit, threadId: string, cwd?
 
 export function runClaudeTurn(prompt: string, emit: AgentEmit) {
     if (!prompt.trim()) return;
-    const child = spawnAgent("claude", ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--allowedTools", "mcp__infinite-canvas__*", prompt], ["ignore", "pipe", "pipe"], emit);
+    const child = spawnAgent("claude", ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--allowedTools", "mcp__luffy-canvas__*", prompt], ["ignore", "pipe", "pipe"], emit);
     if (!child) return;
     pipeJsonLines(child, emit, "claude");
 }
@@ -150,22 +171,30 @@ class CodexAppClient {
     private activeTurns = new Map<string, PendingRequest>();
     private completedTurns = new Map<string, Error | null>();
 
-    private constructor(private child: ChildProcess, private emit: AgentEmit) {}
+    private constructor(
+        private child: ChildProcess,
+        private emit: AgentEmit,
+    ) {}
 
     static async start(emit: AgentEmit) {
         const child = spawn(process.execPath, [codexBin(), "app-server", "--stdio"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+        codexAppStartingChild = child;
         const client = new CodexAppClient(child, emit);
         child.stdout?.on("data", (chunk) => client.read(chunk.toString()));
         child.stderr?.on("data", (chunk) => emit("agent_log", { text: chunk.toString() }));
         child.on("error", (error) => emit("agent_error", { message: error.message }));
         child.on("exit", (code) => {
+            if (codexAppStartingChild === child) codexAppStartingChild = null;
             client.failAll(`Codex app-server exited: ${code ?? 0}`);
-            codexApp = null;
-            codexThreadId = "";
+            if (codexApp === client) {
+                codexApp = null;
+                codexThreadId = "";
+            }
             emit("agent_log", { text: `Codex app-server exited: ${code ?? 0}` });
         });
-        await client.request("initialize", { clientInfo: { name: "canvas-agent", title: "Infinite Canvas Agent", version: VERSION }, capabilities: { experimentalApi: true, requestAttestation: false } });
+        await client.request("initialize", { clientInfo: { name: "luffy-canvas-agent", title: "Luffy Canvas Agent", version: VERSION }, capabilities: { experimentalApi: true, requestAttestation: false } });
         client.notify("initialized");
+        if (codexAppStartingChild === child) codexAppStartingChild = null;
         return client;
     }
 
@@ -219,6 +248,12 @@ class CodexAppClient {
         } catch {
             return false;
         }
+    }
+
+    shutdown(force = false) {
+        if (this.child.exitCode !== null || this.child.signalCode !== null) return false;
+        this.failAll("Luffy Canvas Agent is shutting down");
+        return terminateAgentChild(this.child, force);
     }
 
     private request(method: string, params: unknown) {
@@ -289,7 +324,7 @@ class CodexAppClient {
 
     private answerServerRequest(message: Json) {
         const method = String(message.method);
-        const result = method === "mcpServer/elicitation/request" ? { action: "accept", content: {}, _meta: null } : { decision: "decline" };
+        const result = method === "mcpServer/elicitation/request" ? { action: "decline", content: {}, _meta: null } : { decision: "decline" };
         this.write({ id: message.id, result });
         this.emit("agent_event", { agent: "codex", type: "server.request", method, params: message.params, result });
     }
@@ -311,7 +346,7 @@ class CodexAppClient {
     }
 }
 
-function canvasAgentMcpCommand() {
+export function canvasAgentMcpCommand() {
     const current = process.argv.find((arg) => /index\.(t|j)s$/.test(arg)) || "";
     const entry = path.resolve(current || fileURLToPath(new URL("./index.js", import.meta.url)));
     const tsx = path.join(path.dirname(entry), "..", "node_modules", "tsx", "dist", "cli.mjs");
@@ -319,7 +354,7 @@ function canvasAgentMcpCommand() {
 }
 
 function codexConfig() {
-    return { mcp_servers: { "infinite-canvas": { command: canvasAgentMcp.command, args: canvasAgentMcp.args, default_tools_approval_mode: "approve", startup_timeout_sec: 20, tool_timeout_sec: 90 } } };
+    return { mcp_servers: { "luffy-canvas": { command: canvasAgentMcp.command, args: canvasAgentMcp.args, default_tools_approval_mode: "approve", startup_timeout_sec: 20, tool_timeout_sec: 180 } } };
 }
 
 function codexInput(prompt: string, images: string[]) {
@@ -353,12 +388,18 @@ async function loadCodexThread(emit: AgentEmit, threadId: string, cwd: string | 
 
 async function getCodexApp(emit: AgentEmit) {
     if (codexApp) return codexApp;
+    const generation = codexAppGeneration;
     codexAppStart ||= CodexAppClient.start(emit);
     try {
-        codexApp = await codexAppStart;
-        return codexApp;
+        const app = await codexAppStart;
+        if (generation !== codexAppGeneration) {
+            app.shutdown(true);
+            throw new Error("Luffy Canvas Agent is shutting down");
+        }
+        codexApp = app;
+        return app;
     } finally {
-        codexAppStart = null;
+        if (generation === codexAppGeneration) codexAppStart = null;
     }
 }
 
@@ -501,7 +542,7 @@ async function writeAttachmentFiles(attachments: AgentAttachment[]) {
 async function writeAttachmentFile(item: AgentAttachment) {
     const [, meta = "", data = ""] = item.dataUrl?.match(/^data:([^;]+);base64,(.+)$/) || [];
     if (!data) throw new Error(`图片附件无效：${item.name || "未命名图片"}`);
-    const file = path.join(os.tmpdir(), `infinite-canvas-${Date.now()}-${Math.random().toString(16).slice(2)}.${imageExt(meta || item.type)}`);
+    const file = path.join(os.tmpdir(), `luffy-canvas-${Date.now()}-${Math.random().toString(16).slice(2)}.${imageExt(meta || item.type)}`);
     await fs.writeFile(file, Buffer.from(data, "base64"));
     return file;
 }
@@ -537,10 +578,27 @@ function pipeJsonLines(child: ReturnType<typeof spawn>, emit: AgentEmit, agent: 
 
 function spawnAgent(name: string, args: string[], stdio: StdioOptions, emit: AgentEmit) {
     try {
-        return spawn(name, args, { stdio, shell: process.platform === "win32", windowsHide: true });
+        return spawn(name, args, { stdio, shell: false, windowsHide: true });
     } catch (error) {
         emit("agent_error", { message: errorMessage(error) });
         return null;
+    }
+}
+
+function terminateAgentChild(child: ChildProcess, force: boolean) {
+    if (child.exitCode !== null || child.signalCode !== null) return false;
+    try {
+        child.stdin?.end();
+        const stopped = child.kill(force ? "SIGKILL" : "SIGTERM");
+        if (!force) {
+            const timer = setTimeout(() => {
+                if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+            }, 1000);
+            timer.unref();
+        }
+        return stopped;
+    } catch {
+        return false;
     }
 }
 

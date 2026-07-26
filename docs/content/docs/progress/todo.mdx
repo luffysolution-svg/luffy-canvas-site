@@ -7,6 +7,6 @@ description: 当前项目后续值得处理的事项
 
 本文档用来记录当前项目后续比较值得处理的事项。
 
-- 本地 Agent 接入后续：按[本地 Agent 接入规划](/docs/progress/local-agent-integration-plan)把 Claude Code CLI Adapter 升级为 Claude Agent SDK Adapter，并完善工具队列体验。
+- 本地 Agent 接入后续：按[本地 Agent 接入规划](/docs/progress/local-agent-integration-plan)评估 Claude Agent SDK，继续完善计费任务幂等和跨进程运行状态可观测性。
 - AI 渠道服务端接入：为生成接口本身不允许浏览器跨域请求、或结果下载必须附加服务端鉴权头的提供商增加安全的同源转发；当前代理只处理无需额外请求头的 HTTPS 结果链接。
 - 生图任务服务化后续：接入持久化任务存储、供应商异步任务查询或外部队列后，再实现跨刷新任务恢复和 `clientRequestId` 幂等提交；不支持异步查询的同步渠道不能伪装为可恢复。

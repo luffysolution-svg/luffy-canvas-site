@@ -6,6 +6,7 @@ import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { useAgentStore } from "@/stores/use-agent-store";
 import { DOCS_URL } from "@/constant/env";
 
 export function CanvasTopBar({
@@ -183,10 +184,19 @@ function MenuLabel({ text, shortcut }: { text: string; shortcut: string }) {
 function CompactAgentStatus({ status, onClick }: { status: { connected: boolean; enabled: boolean; activity: string }; onClick: () => void }) {
     const colorTheme = useThemeStore((state) => state.theme);
     const theme = canvasThemes[colorTheme];
-    const label = status.connected ? "Codex 已连接" : status.enabled ? `Codex ${status.activity || "连接中"}` : "Codex 未连接";
+    const provider = useAgentStore((state) => state.provider);
+    const providers = useAgentStore((state) => state.providers);
+    const providerName = providers.find((item) => item.id === provider)?.displayName || (provider === "claude-code" ? "Claude Code" : "Codex");
+    const label = status.connected ? `${providerName} 已连接` : status.enabled ? `${providerName} ${status.activity || "连接中"}` : `${providerName} 未连接`;
     const dotColor = status.connected ? "#22c55e" : status.enabled ? "#f59e0b" : theme.node.muted;
     return (
-        <button type="button" className="flex h-8 items-center gap-1.5 text-xs transition hover:opacity-75" style={{ color: status.connected ? "#16a34a" : status.enabled ? "#d97706" : theme.node.muted }} onClick={onClick} title="打开本地 Codex 面板">
+        <button
+            type="button"
+            className="flex h-8 items-center gap-1.5 text-xs transition hover:opacity-75"
+            style={{ color: status.connected ? "#16a34a" : status.enabled ? "#d97706" : theme.node.muted }}
+            onClick={onClick}
+            title={`打开本地 ${providerName} 面板`}
+        >
             <span className="size-2 rounded-full" style={{ background: dotColor }} />
             <span className="max-w-[140px] truncate">{label}</span>
         </button>

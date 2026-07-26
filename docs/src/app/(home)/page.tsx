@@ -75,7 +75,7 @@ export default function HomePage() {
         <div className="overflow-hidden rounded-2xl lg:w-[108%] lg:max-w-none">
           <img
             src={previewImages[3].src}
-            alt="luffy-canvas-site 效果图"
+            alt="Luffy Canvas 效果图"
             className="aspect-[16/10] w-full rounded-xl object-cover"
           />
         </div>

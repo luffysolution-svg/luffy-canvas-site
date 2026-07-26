@@ -5,9 +5,14 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 # 待测试
 
+- Luffy Canvas 插件迁移与 npm 包：移除旧 `infinite-canvas` 插件、MCP 和 marketplace 后，安装 `luffy-canvas@luffy-canvas-local`；新任务应只加载 `open-luffy-canvas`、`operate-luffy-canvas` 和 `luffy-canvas` MCP。验证 `npx -y @luffysolution/canvas-agent@0.2.0` 可启动网页 Agent，固定版本的 `mcp --profile editor` 可被标准 MCP 客户端加载。
+- Agent 安全连接：验证 pairing code 成功、重复使用失败、过期失败，session token 过期和撤销有效，非允许 Origin 被拒绝；URL、Referrer、日志和永久 `localStorage` 中均不得出现长期 token，自动连接不得关闭写操作确认；MCP 读写结果不得包含媒体 dataURL、签名地址或浏览器存储键，退出 Agent 后不得残留审批租约或 Provider 子进程。
+- MCP Profile：分别验证 `readonly`、`editor`、`generator`、`assets`、`full` 的 `tools/list` 和输入级权限；`editor` 不得通过 `autoRun` 或 `run_generation` 触发生成，删除、生成、附件和素材写入仍需网页确认。
+- Agent Provider：验证 Codex 与 Claude Code 可用性、会话和运行状态隔离；Claude CLI 不存在时显示安装提示，不支持的历史/附件能力正确禁用；WorkBuddy 按标准 MCP 配置可读取和编辑已配对画布。
+- 旧配置迁移：新配置不存在时从 `~/.infinite-canvas/` 迁移 URL、端口、Origin、工作空间和会话索引到 `~/.luffy-canvas/agent.json`，不迁移永久 token、不写回或删除旧目录，并输出不含密钥的迁移提示。
 - 生图可靠性与状态：分别注入 429、502、503、504、连接中断、响应解析失败和 IndexedDB 写入失败，确认 429/502/503/网络重置最多退避重试 3 次，408/425/499/502/503/504/524 与连接中断显示「待确认」；生成成功但本地保存失败时仍显示「已生成」并保留下载入口。
 - 生图并发与参考图优化：普通拆分请求的全局并发不超过 2，4K 与图生图不超过 1，支持原生 `n` 的渠道只提交一次批量请求；连续执行至少 5 次 4K 图生图，并覆盖 1–15 张多图。确认同批参考图只转换一次、原图不被替换、透明 PNG 不转 JPEG，设置中关闭自动优化后请求使用原图。
-- 品牌与部署：确认网页标题、顶部品牌、GitHub/文档入口均指向 `luffy-canvas-site`，首页和顶部「致谢」入口可访问上游 `basketikun/infinite-canvas`；Vercel 生产站点首页及 `/image`、`/video`、`/canvas` 刷新后均可正常访问，公开仓库与部署产物不包含 API Key。
+- 品牌与部署：确认网页标题和产品显示名为 Luffy Canvas，GitHub/文档入口指向当前仓库，首页和顶部「致谢」入口可访问上游 `basketikun/infinite-canvas`；Vercel 生产站点首页及 `/image`、`/video`、`/canvas` 刷新后均可正常访问，公开仓库与部署产物不包含 API Key。
 - AI 渠道预设与迁移：分别新增 OpenAI、New API、OpenAI 兼容、Gemini、Qwen/百炼、完全自定义渠道，确认预设协议与默认 URL 正确；旧版单能力模型和单调用脚本刷新后应自动迁移且仍可使用。删除一个仍被画布节点引用的渠道后，该节点请求应明确报“渠道已删除”，不能静默改用其他渠道。
 - 渠道连接与鉴权：验证“测试连接”和“拉取模型列表”在 Bearer API Key、无需鉴权两种模式下均正确；错误 Key、错误 Base URL、限流以及浏览器 CORS 拦截应显示可诊断的中文提示。New API 和第三方中转站需分别测试 Base URL 已含 `/v1` 与未含 `/v1` 的情况。
 - 原生图像与文本：验证 OpenAI 兼容生图/改图、Gemini 生图/文本、Qwen-Image 文生图/参考图编辑和 Qwen OpenAI 兼容 Responses；覆盖多张参考图、蒙版、1–15 张结果、不同尺寸与透明背景。Gemini 3.1 Flash、Flash Lite、Pro 的比例和 512/1K/2K/4K 应分别按模型收口；Qwen 编辑最多 3 张且单张 10MB，2.0 系列按总像素、Edit Max/Plus 按单边 512–2048 校验，越界时应报错而不能静默缩放。非方形结果卡片应完整显示而不被裁切。

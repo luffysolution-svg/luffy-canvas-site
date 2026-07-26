@@ -1,0 +1,57 @@
+---
+title: Claude Code
+description: 通过标准 MCP 或网页侧边栏使用 Claude Code 操作 Luffy Canvas
+---
+
+# Claude Code
+
+Claude Code 可以作为标准 MCP 客户端调用 Luffy Canvas。网页侧边栏还可通过本机 `ClaudeCodeAdapter` 发起 Claude CLI turn；两种入口不共享或伪造会话历史。
+
+## 添加 MCP
+
+使用已公开发布的固定版本：
+
+```bash
+claude mcp add \
+  --scope user \
+  --transport stdio \
+  luffy-canvas \
+  -- npx -y @luffysolution/canvas-agent@0.2.0 mcp --profile editor
+```
+
+开发路径：
+
+```bash
+cd /absolute/path/to/luffy-canvas-site/canvas-agent
+npm ci
+npm run build
+claude mcp add \
+  --scope user \
+  --transport stdio \
+  luffy-canvas \
+  -- node /absolute/path/to/luffy-canvas-site/canvas-agent/dist/index.js mcp --profile editor
+```
+
+Claude Code 的允许工具前缀必须是：
+
+```text
+mcp__luffy-canvas__*
+```
+
+不要继续使用 `mcp__infinite-canvas__*`。
+
+## 连接网页
+
+另开终端运行 `node /absolute/path/to/luffy-canvas-site/canvas-agent/dist/index.js`，再用短期 pairing code 在网页完成配对。stdio MCP 和 HTTP/SSE Agent 是两个进程，缺一不可。
+
+## 网页侧边栏能力
+
+当本机存在 `claude` CLI 时，Provider 列表显示 Claude Code。Adapter 支持可用性检测、新建会话、发送 turn、流式 JSON 事件、工具调用展示、错误状态和停止当前进程。
+
+侧边栏以 Claude Code `--bare` 模式启动：忽略工作区 CLAUDE.md、hooks、插件和用户/项目自定义，只加载命令行显式提供的 `luffy-canvas` MCP，并禁用内置工具。该模式不会读取 OAuth/keychain；请确保 `ANTHROPIC_API_KEY`、`apiKeyHelper` 或所用第三方 Provider 环境变量可在 `--bare` 下认证。
+
+Claude CLI 不稳定或不原生支持的历史恢复、附件或文件能力会通过 Provider capability 标记，网页禁用对应入口；不会用本地伪历史冒充 Claude 原生会话。
+
+## 权限
+
+推荐从 `editor` 开始；只读审查使用 `readonly`，需要生成时显式改用 `generator` 或 `full`。MCP Profile 与网页确认是两层权限，Claude Code 允许某个 MCP 工具不代表网页自动批准写入。

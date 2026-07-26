@@ -1,26 +1,39 @@
 {
-  "name": "@basketikun/canvas-agent",
+  "name": "@luffysolution/canvas-agent",
   "version": "0.2.0",
+  "description": "Local agent and MCP server for Luffy Canvas",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "canvas-agent": "./dist/index.js"
+    "luffy-canvas-agent": "./dist/index.js"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "test": "tsx --test src/canvas-session.test.ts",
+    "test": "tsx --test src/*.test.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "prepack": "npm run build"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/luffysolution-svg/luffy-canvas-site.git",
+    "directory": "canvas-agent"
+  },
+  "homepage": "https://luffy-canvas-site.vercel.app/",
+  "bugs": {
+    "url": "https://github.com/luffysolution-svg/luffy-canvas-site/issues"
+  },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
-    "@openai/codex": "^0.139.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@openai/codex": "^0.145.0",
     "express": "^5.1.0",
     "zod": "^3.25.0"
   },

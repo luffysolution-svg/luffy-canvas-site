@@ -1,140 +1,52 @@
 ---
 title: Codex App 插件
-description: 在 Codex App 中安装并使用 luffy-canvas-site 插件
+description: 安装和迁移 Luffy Canvas Codex 插件
 ---
 
 # Codex App 插件
 
-Infinite Canvas 提供了一个 Codex App 插件，用来把 Codex 和本地 Canvas Agent 连接起来。安装后，你可以直接在 Codex 中说“打开 Infinite Canvas”，让 Codex 打开画布、读取节点、创建节点并触发生成流程。
+当前插件源码位于 `plugins/luffy-canvas/`，插件 ID 和 MCP Server ID 均为 `luffy-canvas`。完整使用说明见 [Codex 集成](/docs/integrations/codex)。
 
-插件源码位于仓库的 `plugins/infinite-canvas/` 目录。
-
-## 安装方式
-
-### 让 Codex 自动安装
-
-把下面这段发给 Codex：
-
-```text
-请从 https://github.com/luffysolution-svg/luffy-canvas-site.git 安装 luffy-canvas-site Codex 插件。
-请 clone 仓库到 ~/plugins/luffy-canvas-site，确认 plugins/infinite-canvas/.codex-plugin/plugin.json 存在，
-把 plugins/infinite-canvas 加入 personal marketplace，先运行 codex plugin marketplace add ~，
-再运行 codex plugin add infinite-canvas@personal。
-安装后请校验插件，并告诉我是否需要开启一个新对话来加载新技能和 MCP 工具。
-```
-
-这种方式适合不想手动改 marketplace 配置的用户。Codex 会完成 clone、写入 marketplace、安装插件和基础校验。
-
-### 手动安装
-
-推荐把仓库 clone 到 Codex personal marketplace 默认会引用的位置：
+## 从仓库安装
 
 ```bash
-mkdir -p ~/plugins
-git clone https://github.com/luffysolution-svg/luffy-canvas-site.git ~/plugins/luffy-canvas-site
-```
-
-确保 `~/.agents/plugins/marketplace.json` 中有 Infinite Canvas 条目。这里的 `path` 要指向仓库里的插件子目录：
-
-```json
-{
-  "name": "personal",
-  "interface": {
-    "displayName": "Personal"
-  },
-  "plugins": [
-    {
-      "name": "infinite-canvas",
-      "source": {
-        "source": "local",
-        "path": "./plugins/luffy-canvas-site/plugins/infinite-canvas"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Productivity"
-    }
-  ]
-}
-```
-
-然后注册 personal marketplace 并安装插件：
-
-```bash
-codex plugin marketplace add ~
-codex plugin add infinite-canvas@personal
-```
-
-安装完成后，建议新建一个 Codex 对话，让新的 skill 和 MCP 工具完整加载。
-
-### 本仓库开发调试安装
-
-如果你正在 Infinite Canvas 仓库中开发插件，可以直接使用仓库自带的 marketplace：
-
-```bash
-cd /path/to/luffy-canvas-site
+git clone https://github.com/luffysolution-svg/luffy-canvas-site.git
+cd luffy-canvas-site
+cd canvas-agent
+npm ci
+npm run build
+cd ..
 codex plugin marketplace add "$(pwd)"
-codex plugin add infinite-canvas@infinite-canvas-local
+codex plugin add luffy-canvas@luffy-canvas-local
 ```
 
-仓库内的 `.agents/plugins/marketplace.json` 已经指向 `./plugins/infinite-canvas`，适合开发者本地调试。
+Windows PowerShell 将 `"$(pwd)"` 换成 `"$PWD"`。安装或更新后新建 Codex 任务。
 
-## 使用插件
-
-新建 Codex 对话后，可以直接说：
-
-```text
-打开 Infinite Canvas 新建画布 并连接好Codex
-```
-
-插件会启动本地 Canvas Agent，读取连接地址和 token，然后在右侧打开 `https://luffy-canvas-site.vercel.app/` 并自动新建、连接画布。只有明确要求使用本地项目时，插件才会启动本地前端。
-
-画布打开后可以继续让 Codex 操作画布：
-
-```text
-读取当前画布并总结节点结构
-根据选中节点创建一组生图提示词
-把这些节点整理成一个生成流程
-```
-
-## 更新插件
-
-普通业务代码变更通常不需要更新插件。只有改了下面这些内容时，才建议重新安装或刷新插件：
-
-- `plugins/infinite-canvas/.codex-plugin/plugin.json`
-- `plugins/infinite-canvas/.mcp.json`
-- `plugins/infinite-canvas/skills/` 下的技能说明
-- 插件暴露的 MCP、app 或入口脚本
-
-重新安装后建议开启新对话，避免旧对话继续使用缓存中的技能和 MCP 工具。
-
-## 手动排查
-
-插件默认通过下面的 MCP 命令启动 Canvas Agent：
+## 从旧插件迁移
 
 ```bash
-npx -y @basketikun/canvas-agent mcp
+codex plugin remove infinite-canvas
+codex mcp remove infinite-canvas
+codex plugin marketplace remove luffy-canvas-site-local
 ```
 
-如果需要手动排查，先启动画布：
+旧项不存在时忽略对应提示，然后重新注册当前仓库 marketplace。
+
+## 本地源码调试
+
+需要调试当前仓库中的 Agent 源码时，先构建本仓库：
 
 ```bash
-cd web
-bun install
-bun run dev
+cd canvas-agent
+npm ci
+npm test
+npm run build
+codex mcp add luffy-canvas -- node /absolute/path/to/luffy-canvas-site/canvas-agent/dist/index.js mcp --profile editor
+node dist/index.js
 ```
 
-然后启动本地 Agent：
+普通 `node dist/index.js` 提供网页连接；带 `mcp` 的进程提供 stdio 工具。日常使用请改用已发布的 `@luffysolution/canvas-agent@0.2.0`。
 
-```bash
-npx -y @basketikun/canvas-agent
-```
+## 安全连接
 
-从 Agent 输出或 `http://127.0.0.1:17371/config` 读取本地地址和 token 后，打开：
-
-```text
-<画布网页地址>/canvas?mode=new&agentUrl=<Local URL>&agentToken=<Connect token>
-```
-
-`mode=new` 会让网页自动创建具体画布并连接本地 Agent，不需要手动点击“新建画布”。
+打开 `https://luffy-canvas-site.vercel.app/canvas?mode=new` 后，在网页配对界面输入短期 pairing code。不要把 pairing code 或 session token 放进 URL；自动连接也不会关闭写操作确认。

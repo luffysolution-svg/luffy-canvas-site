@@ -2,11 +2,7 @@ name: Publish Canvas Agent
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - "canvas-agent/**"
-      - ".github/workflows/publish-canvas-agent.yml"
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -32,21 +28,38 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Inspect package contents
+        run: npm pack --dry-run
 
       - name: Check package version
         id: package
+        shell: bash
         run: |
+          set -euo pipefail
           name=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
-          published=$(npm view "$name@$version" version 2>/dev/null || true)
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [ -n "$published" ]; then
+
+          error_log=$(mktemp)
+          if npm view "$name@$version" version >/dev/null 2>"$error_log"; then
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
-          else
+          elif grep -q "E404" "$error_log"; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            cat "$error_log" >&2
+            rm -f "$error_log"
+            exit 1
           fi
+          rm -f "$error_log"
 
       - name: Publish to npm
         if: steps.package.outputs.should_publish == 'true'

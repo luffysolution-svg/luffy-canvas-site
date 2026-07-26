@@ -374,9 +374,7 @@ function InfiniteCanvasPage() {
         if (!affectedNodeIds.size) return;
         setNodes((prev) =>
             prev.map((node) =>
-                affectedNodeIds.has(node.id) && node.metadata?.status === NODE_STATUS_LOADING
-                    ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, generationStatus: undefined, failureStage: undefined, errorDetails: undefined } }
-                    : node,
+                affectedNodeIds.has(node.id) && node.metadata?.status === NODE_STATUS_LOADING ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, generationStatus: undefined, failureStage: undefined, errorDetails: undefined } } : node,
             ),
         );
     }, []);
@@ -1058,7 +1056,7 @@ function InfiniteCanvasPage() {
     }, [applyHistory]);
 
     const createAndOpenProject = useCallback(() => {
-        const id = createProject(`luffy-canvas-site ${useCanvasStore.getState().projects.length + 1}`);
+        const id = createProject(`Luffy Canvas ${useCanvasStore.getState().projects.length + 1}`);
         navigate(`/canvas/${id}`);
     }, [createProject, navigate]);
 
@@ -1073,7 +1071,7 @@ function InfiniteCanvasPage() {
         if (!project) return message.error("未找到当前画布");
         const hide = message.loading("正在导出当前画布…", 0);
         try {
-            await exportCanvasProjects([project], project.title || "luffy-canvas-site");
+            await exportCanvasProjects([project], project.title || "luffy-canvas");
             message.success("已导出当前画布");
         } catch (error) {
             console.error(error);
@@ -1629,16 +1627,19 @@ function InfiniteCanvasPage() {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node)));
     }, []);
 
-    const downloadNodeImage = useCallback(async (node: CanvasNodeData) => {
-        if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
-        const filename = `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.mimeType || node.metadata.content)}`;
-        try {
-            const content = node.type === CanvasNodeType.Image && node.metadata.remoteUrl && !node.metadata.storageKey ? await downloadImageBlob(node.metadata.remoteUrl) : node.metadata.content;
-            saveAs(content, filename);
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : "图片下载失败");
-        }
-    }, [message]);
+    const downloadNodeImage = useCallback(
+        async (node: CanvasNodeData) => {
+            if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
+            const filename = `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.mimeType || node.metadata.content)}`;
+            try {
+                const content = node.type === CanvasNodeType.Image && node.metadata.remoteUrl && !node.metadata.storageKey ? await downloadImageBlob(node.metadata.remoteUrl) : node.metadata.content;
+                saveAs(content, filename);
+            } catch (error) {
+                message.error(error instanceof Error ? error.message : "图片下载失败");
+            }
+        },
+        [message],
+    );
 
     const storeNodeImage = useCallback(async (node: CanvasNodeData) => {
         if (!node.metadata?.content) throw new Error("没有可保存的图片");
@@ -1874,13 +1875,7 @@ function InfiniteCanvasPage() {
                     signal: controller.signal,
                     mask: { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl },
                     onStatus: (_index, generationStatus, detail) =>
-                        setNodes((prev) =>
-                            prev.map((item) =>
-                                item.id === childId
-                                    ? { ...item, metadata: { ...item.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } }
-                                    : item,
-                            ),
-                        ),
+                        setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } } : item))),
                 });
                 const result = batch.results[0];
                 if (!result || result.status === "rejected") throw result?.reason || new Error("接口没有返回图片");
@@ -1889,9 +1884,7 @@ function InfiniteCanvasPage() {
                 const size = resolved.width && resolved.height ? fitNodeSize(resolved.width, resolved.height, node.width, node.height) : { width: node.width, height: node.height };
                 setNodes((prev) =>
                     prev.map((item) =>
-                        item.id === childId
-                            ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized, prompt, ...generationMetadata } }
-                            : item,
+                        item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized, prompt, ...generationMetadata } } : item,
                     ),
                 );
                 if (resolved.metadata.persistenceError) message.warning(resolved.metadata.persistenceError);
@@ -1983,22 +1976,11 @@ function InfiniteCanvasPage() {
             setDialogNodeId(childId);
             const controller = startGenerationRequest(childId, node.id, childId);
             try {
-                const batch = await requestImageBatch(
-                    generationConfig,
-                    prompt,
-                    [{ id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey }],
-                    {
-                        signal: controller.signal,
-                        onStatus: (_index, generationStatus, detail) =>
-                            setNodes((prev) =>
-                                prev.map((item) =>
-                                    item.id === childId
-                                        ? { ...item, metadata: { ...item.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } }
-                                        : item,
-                                ),
-                            ),
-                    },
-                );
+                const batch = await requestImageBatch(generationConfig, prompt, [{ id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey }], {
+                    signal: controller.signal,
+                    onStatus: (_index, generationStatus, detail) =>
+                        setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } } : item))),
+                });
                 const result = batch.results[0];
                 if (!result || result.status === "rejected") throw result?.reason || new Error("接口没有返回图片");
                 const image = result.value;
@@ -2006,9 +1988,7 @@ function InfiniteCanvasPage() {
                 const size = resolved.width && resolved.height ? fitNodeSize(resolved.width, resolved.height, imageConfig.width, imageConfig.height) : imageConfig;
                 setNodes((prev) =>
                     prev.map((item) =>
-                        item.id === childId
-                            ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized, prompt, ...generationMetadata } }
-                            : item,
+                        item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized, prompt, ...generationMetadata } } : item,
                     ),
                 );
                 if (resolved.metadata.persistenceError) message.warning(resolved.metadata.persistenceError);
@@ -2198,13 +2178,7 @@ function InfiniteCanvasPage() {
                 if (!scene) return;
                 setRunningNodeId(nodeId);
                 const controller = startGenerationRequest(nodeId, nodeId, nodeId);
-                setNodes((prev) =>
-                    prev.map((node) =>
-                        node.id === nodeId
-                            ? { ...node, metadata: { ...node.metadata, prompt: scene, status: NODE_STATUS_LOADING, generationStatus: "queued", failureStage: undefined, errorDetails: undefined } }
-                            : node,
-                    ),
-                );
+                setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: scene, status: NODE_STATUS_LOADING, generationStatus: "queued", failureStage: undefined, errorDetails: undefined } } : node)));
                 try {
                     const fullPrompt = (builtinPanel.promptPrefix || "") + scene;
                     // 上游图片节点作为参考图(图生图);无上游则纯文生图
@@ -2220,13 +2194,7 @@ function InfiniteCanvasPage() {
                     const batch = await requestImageBatch({ ...generationConfig, count: "1" }, fullPrompt, refs, {
                         signal: controller.signal,
                         onStatus: (_index, generationStatus, detail) =>
-                            setNodes((prev) =>
-                                prev.map((node) =>
-                                    node.id === nodeId
-                                        ? { ...node, metadata: { ...node.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } }
-                                        : node,
-                                ),
-                            ),
+                            setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } } : node))),
                     });
                     const result = batch.results[0];
                     if (!result || result.status === "rejected") throw result?.reason || new Error("接口没有返回图片");
@@ -2442,19 +2410,19 @@ function InfiniteCanvasPage() {
                                         if (node.id === rootId && (targetId === rootId || !root?.metadata?.primaryImageId))
                                             return {
                                                 ...node,
-                                                 position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
-                                                 width: imageSize.width,
-                                                 height: imageSize.height,
-                                                 metadata: { ...node.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized, primaryImageId: targetId },
-                                             };
+                                                position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
+                                                width: imageSize.width,
+                                                height: imageSize.height,
+                                                metadata: { ...node.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized, primaryImageId: targetId },
+                                            };
                                         if (node.id === targetId)
                                             return {
                                                 ...node,
-                                                 position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
-                                                 width: imageSize.width,
-                                                 height: imageSize.height,
-                                                 metadata: { ...node.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized },
-                                             };
+                                                position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
+                                                width: imageSize.width,
+                                                height: imageSize.height,
+                                                metadata: { ...node.metadata, ...resolved.metadata, optimizedReferenceCount: batch.referenceOptimization.optimized },
+                                            };
                                         return node;
                                     });
                                 });
@@ -2821,13 +2789,7 @@ function InfiniteCanvasPage() {
                 const batch = await requestImageBatch({ ...generationConfig, count: "1" }, prompt, retryImages, {
                     signal: controller.signal,
                     onStatus: (_index, generationStatus, detail) =>
-                        setNodes((prev) =>
-                            prev.map((item) =>
-                                item.id === node.id
-                                    ? { ...item, metadata: { ...item.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } }
-                                    : item,
-                            ),
-                        ),
+                        setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, generationStatus, failureStage: detail instanceof ImageGenerationError ? detail.failureStage : undefined } } : item))),
                 });
                 const result = batch.results[0];
                 if (!result || result.status === "rejected") throw result?.reason || new Error("接口没有返回图片");
@@ -2931,7 +2893,9 @@ function InfiniteCanvasPage() {
 
     const insertAssistantImage = useCallback(
         async (image: CanvasAssistantImage) => {
-            const storedImage = image.storageKey ? { url: image.dataUrl, storageKey: image.storageKey, width: image.width || 1, height: image.height || 1, bytes: image.bytes || 0, mimeType: image.mimeType || "image/png" } : await uploadImage(image.dataUrl);
+            const storedImage = image.storageKey
+                ? { url: image.dataUrl, storageKey: image.storageKey, width: image.width || 1, height: image.height || 1, bytes: image.bytes || 0, mimeType: image.mimeType || "image/png" }
+                : await uploadImage(image.dataUrl);
             const meta = storedImage.width === 1 && storedImage.height === 1 ? await readImageMeta(storedImage.url) : storedImage;
             const config = fitNodeSize(meta.width, meta.height);
             const center = screenToCanvas((containerRef.current?.getBoundingClientRect().left || 0) + size.width / 2, (containerRef.current?.getBoundingClientRect().top || 0) + size.height / 2);

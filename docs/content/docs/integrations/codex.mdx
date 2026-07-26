@@ -1,0 +1,85 @@
+---
+title: Codex
+description: 在 Codex 中安装 Luffy Canvas 插件或手动配置 MCP
+---
+
+# Codex
+
+Codex 可以通过仓库自带插件加载两个 Luffy Canvas Skills 和 `luffy-canvas` MCP，也可以只手动添加 MCP。
+
+## 安装 Codex 插件
+
+```bash
+git clone https://github.com/luffysolution-svg/luffy-canvas-site.git
+cd luffy-canvas-site
+cd canvas-agent
+npm ci
+npm run build
+cd ..
+codex plugin marketplace add "$(pwd)"
+codex plugin add luffy-canvas@luffy-canvas-local
+```
+
+Windows PowerShell 将 `"$(pwd)"` 换成 `"$PWD"`。安装或更新后新建 Codex 任务，使 Skills 和 MCP 从新插件完整加载。
+
+插件包含：
+
+- `open-luffy-canvas`：启动 Agent、打开在线或本地画布并安全配对。
+- `operate-luffy-canvas`：读取、编辑、布局和生成画布内容。
+
+## 手动添加 MCP
+
+使用已公开发布的固定版本：
+
+```bash
+codex mcp add luffy-canvas -- npx -y @luffysolution/canvas-agent@0.2.0 mcp --profile editor
+```
+
+开发当前仓库源码时，先构建仓库，再使用绝对路径：
+
+```bash
+cd canvas-agent
+npm ci
+npm test
+npm run build
+codex mcp add luffy-canvas -- node /absolute/path/to/luffy-canvas-site/canvas-agent/dist/index.js mcp --profile editor
+```
+
+不要临时改回 `@basketikun/canvas-agent`，否则仍会使用上游发布物。
+
+## 启动网页 Agent 并配对
+
+MCP 进程不提供网页连接。另开终端启动普通 Agent：
+
+```bash
+npx -y @luffysolution/canvas-agent@0.2.0
+```
+
+开发路径对应：
+
+```bash
+node /absolute/path/to/luffy-canvas-site/canvas-agent/dist/index.js
+```
+
+打开 `https://luffy-canvas-site.vercel.app/canvas?mode=new`，在配对界面填写本地地址和短期 pairing code。不要把 pairing code 或 session token 拼进 URL；自动连接也不会关闭写操作确认。
+
+## 网页侧边栏
+
+网页侧边栏通过本机 Agent 使用 `codex app-server --stdio`，支持会话列表、新建、恢复、删除、发送 turn、中断、附件、流式事件和 token usage。MCP 客户端审批与网页画布审批独立存在。
+
+## 从旧名称迁移
+
+```bash
+codex plugin remove infinite-canvas
+codex mcp remove infinite-canvas
+codex plugin marketplace remove luffy-canvas-site-local
+```
+
+然后重新注册当前仓库并安装 `luffy-canvas@luffy-canvas-local`。
+
+## 卸载
+
+```bash
+codex plugin remove luffy-canvas
+codex mcp remove luffy-canvas
+```

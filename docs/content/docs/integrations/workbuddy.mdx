@@ -1,0 +1,56 @@
+---
+title: WorkBuddy
+description: 将 WorkBuddy 作为标准 MCP 客户端连接 Luffy Canvas
+---
+
+# WorkBuddy
+
+WorkBuddy 的定位是标准 MCP 客户端。Luffy Canvas 不在网页侧边栏内启动 WorkBuddy，也不声称 WorkBuddy 可以访问 Codex 或 Claude Code 的侧边栏会话。
+
+## MCP 配置
+
+将已公开发布的固定版本加入 WorkBuddy：
+
+```json
+{
+  "mcpServers": {
+    "luffy-canvas": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@luffysolution/canvas-agent@0.2.0",
+        "mcp",
+        "--profile",
+        "editor"
+      ]
+    }
+  }
+}
+```
+
+开发当前仓库源码时，可先在 `canvas-agent` 目录执行 `npm ci`、`npm run build`，再将 `command` 改为 `node`，并将 `args` 改为 `["/absolute/path/to/luffy-canvas-site/canvas-agent/dist/index.js", "mcp", "--profile", "editor"]`。
+
+## 启动画布连接
+
+1. 另开终端运行普通 Agent：`npx -y @luffysolution/canvas-agent@0.2.0`。
+2. 打开 Luffy Canvas，使用 Agent 输出的短期 pairing code 完成配对。
+3. 确认 WorkBuddy 已加载 `luffy-canvas` MCP，并先调用读取工具检查当前画布。
+4. 写操作在网页审批；WorkBuddy 自身的 MCP 审批仍独立生效。
+
+只启动 MCP 或只启动普通 Agent 都不能完成完整控制链路。
+
+## Profile 建议
+
+- 仅检查画布：`readonly`
+- 编辑节点和布局：`editor`
+- 只运行生成：`generator`
+- 素材工作流：`assets`
+- 明确信任且需要全部能力：`full`
+
+## 排障
+
+- 看不到工具：检查 Server ID、构建路径和当前 Profile。
+- 工具提示没有网页连接：启动普通 Agent 并重新配对。
+- 写入等待：在网页确认目标画布、工具和参数。
+- 生成状态未知：用 `generation_get_status` 查询，确认前不要重复提交。
+- 旧配置仍出现工具：移除 `infinite-canvas` MCP，重启 WorkBuddy 后加载 `luffy-canvas`。
