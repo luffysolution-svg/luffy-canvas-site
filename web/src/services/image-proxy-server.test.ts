@@ -2,6 +2,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
+import netlifyImageProxy, { config as netlifyConfig } from "../../../netlify/functions/image-proxy.mts";
 import { createImageProxyHandler } from "../../../server/image-proxy";
 
 const APP_ORIGIN = "https://canvas.example";
@@ -63,6 +64,21 @@ describe("image proxy server", () => {
         const response = await handle(proxyRequest());
 
         expect(response.status).toBe(403);
+        expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it("returns a timeout while DNS lookup is still pending", async () => {
+        const fetchImpl = vi.fn();
+        const handle = createImageProxyHandler({
+            allowedHosts: ["images.example"],
+            fetchImpl: fetchImpl as typeof fetch,
+            lookupHost: () => new Promise(() => undefined),
+            timeoutMs: 1,
+        });
+
+        const response = await handle(proxyRequest());
+
+        expect(response.status).toBe(504);
         expect(fetchImpl).not.toHaveBeenCalled();
     });
 
@@ -180,5 +196,38 @@ describe("image proxy server", () => {
 
         expect(response.status).toBe(200);
         await expect(response.arrayBuffer()).rejects.toThrow("size limit");
+    });
+});
+
+describe("Netlify image proxy adapter", () => {
+    it("claims the public API path and handles unsupported methods as JSON", async () => {
+        expect(netlifyConfig).toEqual({ path: "/api/images/proxy" });
+
+        const response = await netlifyImageProxy(
+            new Request(`${APP_ORIGIN}/api/images/proxy`, {
+                method: "GET",
+                headers: { origin: APP_ORIGIN },
+            }),
+        );
+
+        expect(response.status).toBe(405);
+        expect(response.headers.get("content-type")).toContain("application/json");
+        await expect(response.json()).resolves.toEqual({
+            error: expect.objectContaining({ code: "method_not_allowed" }),
+        });
+    });
+
+    it("reads the runtime allowlist and keeps wildcard hosts disabled", async () => {
+        vi.stubEnv("IMAGE_PROXY_ALLOWED_HOSTS", "*");
+        try {
+            const response = await netlifyImageProxy(proxyRequest());
+
+            expect(response.status).toBe(503);
+            await expect(response.json()).resolves.toEqual({
+                error: expect.objectContaining({ code: "proxy_not_configured" }),
+            });
+        } finally {
+            vi.unstubAllEnvs();
+        }
     });
 });

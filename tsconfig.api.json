@@ -8,5 +8,5 @@
     "typeRoots": ["./web/node_modules/@types"],
     "types": ["node"]
   },
-  "include": ["api/**/*.ts", "server/**/*.ts"]
+  "include": ["api/**/*.ts", "netlify/**/*.mts", "server/**/*.ts"]
 }

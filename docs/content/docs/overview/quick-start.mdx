@@ -9,7 +9,7 @@ description: 用最少步骤把 Luffy Canvas 跑起来
 
 ## Netlify 部署
 
-在 Netlify 中导入仓库即可，根目录 `netlify.toml` 会构建 `web/` 并配置 React Router 的 SPA 回退。当前版本的 AI 请求由浏览器前台直连用户自己的模型接口，不需要额外配置服务端。
+在 Netlify 中导入仓库后，根目录 `netlify.toml` 会构建 `web/`、配置 React Router 的 SPA 回退并部署图片代理 Function。AI 请求仍由浏览器前台直连用户自己的模型接口；如需在远程图片受 CORS 限制时继续下载和保存，还要在 Netlify 配置精确的 `IMAGE_PROXY_ALLOWED_HOSTS`。完整步骤见 [Netlify 部署](/docs/overview/netlify)。
 
 ## 本地启动
 

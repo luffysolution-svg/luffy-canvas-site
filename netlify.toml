@@ -1,7 +1,10 @@
 [build]
-  base = "web"
-  command = "bun run build"
+  command = "cd web && bun install && bun run build"
   publish = "web/dist"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
 
 [[redirects]]
   from = "/*"

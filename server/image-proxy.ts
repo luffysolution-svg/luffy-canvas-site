@@ -103,7 +103,12 @@ async function fetchImage(
   try {
     let currentUrl = new URL(sourceUrl);
     for (let redirectCount = 0; ; redirectCount += 1) {
-      await validateTarget(currentUrl, allowedHosts, lookupHost);
+      await validateTarget(
+        currentUrl,
+        allowedHosts,
+        lookupHost,
+        abortController.signal,
+      );
       const upstream = await fetchImpl(currentUrl, {
         method: "GET",
         headers: {
@@ -237,6 +242,7 @@ async function validateTarget(
   url: URL,
   allowedHosts: Set<string>,
   lookupHost: (hostname: string) => Promise<LookupAddress[]>,
+  signal: AbortSignal,
 ) {
   if (
     url.protocol !== "https:" ||
@@ -267,8 +273,9 @@ async function validateTarget(
 
   let addresses: LookupAddress[];
   try {
-    addresses = await lookupHost(hostname);
-  } catch {
+    addresses = await withAbort(lookupHost(hostname), signal);
+  } catch (error) {
+    if (signal.aborted) throw error;
     throw new ImageProxyError(502, "dns_failed", "图片结果域名解析失败");
   }
   if (
@@ -281,6 +288,24 @@ async function validateTarget(
       "图片结果域名解析到了非公网地址",
     );
   }
+}
+
+function withAbort<T>(promise: Promise<T>, signal: AbortSignal) {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function readImageMimeType(value: string | null) {
