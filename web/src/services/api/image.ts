@@ -1,6 +1,6 @@
 import axios from "axios";
 
-import { assertModelChannelAvailable, buildApiUrl, resolveModelChannel, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { assertModelChannelAvailable, buildApiUrl, resolveModelChannel, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ImageResponseFormat, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
 import { getDataUrlByteSize } from "@/lib/image-utils";
@@ -83,6 +83,22 @@ type ImageApiResponse = {
     requestId?: string;
     expires_at?: number | string;
     expiresAt?: number | string;
+};
+type OpenRouterImageItem = {
+    type?: string;
+    url?: string;
+    image_url?: string | { url?: string };
+    imageUrl?: string | { url?: string };
+};
+type OpenRouterImagePayload = {
+    id?: string;
+    choices?: Array<{
+        message?: {
+            images?: Array<string | OpenRouterImageItem>;
+            content?: string | Array<string | OpenRouterImageItem>;
+        };
+    }>;
+    error?: { message?: string };
 };
 type QwenImagePayload = {
     output?: {
@@ -865,6 +881,101 @@ async function runLimitedRequests<T>(count: number, concurrency: number, request
     return results;
 }
 
+async function requestOpenRouterImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, options?: RequestOptions) {
+    const concurrency = references.length || config.quality.toLowerCase() === "high" || /4k/i.test(config.size) ? 1 : 2;
+    return (await runLimitedRequests(count, concurrency, () => requestOpenRouterImagesOnce(config, prompt, references, options))).flat().slice(0, count);
+}
+
+async function requestOpenRouterImagesOnce(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
+    const content: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = [{ type: "text", text: withSystemPrompt(config, prompt) }];
+    for (const reference of references) content.push({ type: "image_url", image_url: { url: await imageToDataUrl(reference) } });
+    const imageConfig = openRouterImageConfig(config);
+    const response = await retryImageRequest(
+        () =>
+            axios.post<OpenRouterImagePayload>(
+                aiApiUrl(config, "/chat/completions"),
+                {
+                    model: config.model,
+                    messages: [{ role: "user", content }],
+                    modalities: ["image", "text"],
+                    ...(imageConfig ? { image_config: imageConfig } : {}),
+                },
+                { headers: aiHeaders(config, "application/json"), signal: options?.signal },
+            ),
+        { signal: options?.signal },
+    );
+    return parseOpenRouterImagePayload(response.data, response.headers);
+}
+
+function openRouterImageConfig(config: Pick<AiConfig, "size" | "quality">) {
+    const value = config.size.trim();
+    const dimensions = parseImageDimensions(value);
+    const aspectRatio = value && value.toLowerCase() !== "auto" ? (dimensions ? reducedAspectRatio(dimensions.width, dimensions.height) : value) : undefined;
+    const quality = normalizeQuality(config.quality);
+    const imageSize = quality ? GEMINI_IMAGE_SIZE_BY_QUALITY[quality] : undefined;
+    const imageConfig = { ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}), ...(imageSize ? { image_size: imageSize } : {}) };
+    return Object.keys(imageConfig).length ? imageConfig : undefined;
+}
+
+function reducedAspectRatio(width: number, height: number) {
+    let a = width;
+    let b = height;
+    while (b) [a, b] = [b, a % b];
+    return `${width / a}:${height / a}`;
+}
+
+function parseOpenRouterImagePayload(payload: OpenRouterImagePayload, headers?: unknown) {
+    if (payload.error?.message) throw new Error(payload.error.message);
+    const values =
+        payload.choices?.flatMap((choice) => {
+            const message = choice.message;
+            const content = Array.isArray(message?.content) ? message.content : typeof message?.content === "string" ? [message.content] : [];
+            return [...(message?.images || []), ...content].map(openRouterImageValue).filter((value): value is string => Boolean(value));
+        }) || [];
+    if (!values.length) throw new ImageGenerationError("OpenRouter 接口没有返回图片", { failureStage: "response_parse", kind: "response_parse" });
+    const metadata: ImageProviderMetadata = {
+        providerRequestId: payload.id || readHeader(headers, "x-request-id") || undefined,
+    };
+    return values.map((value) => imageOutputFromString(value, metadata));
+}
+
+function openRouterImageValue(item: string | OpenRouterImageItem) {
+    if (typeof item === "string") return /^(?:data:image\/|https?:\/\/)/i.test(item) ? item : "";
+    const imageUrl = item.image_url;
+    const imageUrlValue = typeof imageUrl === "string" ? imageUrl : imageUrl?.url;
+    const camelImageUrl = item.imageUrl;
+    return imageUrlValue || (typeof camelImageUrl === "string" ? camelImageUrl : camelImageUrl?.url) || item.url || "";
+}
+
+async function requestSeedreamImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, responseFormat: ImageResponseFormat | undefined, options?: RequestOptions) {
+    const quality = normalizeQuality(config.quality);
+    const size = resolveRequestSize(quality, config.size);
+    const images = await Promise.all(references.map(imageToDataUrl));
+    const concurrency = images.length || config.quality.toLowerCase() === "high" || /4k/i.test(config.size) ? 1 : 2;
+    return runLimitedRequests(count, concurrency, async () => {
+        const response = await retryImageRequest(
+            () =>
+                axios.post<ImageApiResponse>(
+                    aiApiUrl(config, "/images/generations"),
+                    {
+                        model: config.model,
+                        prompt: withSystemPrompt(config, prompt),
+                        ...(images.length ? { image: images.length === 1 ? images[0] : images } : {}),
+                        ...(size ? { size } : {}),
+                        ...(responseFormat ? { response_format: responseFormat } : {}),
+                        stream: false,
+                        watermark: false,
+                    },
+                    { headers: aiHeaders(config, "application/json"), signal: options?.signal },
+                ),
+            { signal: options?.signal },
+        );
+        const output = parseImagePayload(response.data, response.headers)[0];
+        if (!output) throw new ImageGenerationError("Seedream 接口没有返回图片", { failureStage: "response_parse", kind: "response_parse" });
+        return output;
+    });
+}
+
 async function requestQwenImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, size: string | undefined, options?: RequestOptions) {
     if (references.length > 3) throw new Error("Qwen 图片编辑最多支持 3 张参考图");
     const content: Array<{ image: string } | { text: string }> = [];
@@ -924,6 +1035,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const selectedModel = config.model || config.imageModel;
     assertModelChannelAvailable(config, selectedModel);
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
+    const channel = resolveModelChannel(config, selectedModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const responseFormat = requestedImageResponseFormat(config, selectedModel);
     const script = resolveModelScript(config, selectedModel, "image");
@@ -946,6 +1058,20 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 { signal: options?.signal },
             );
             return normalizePluginImages(result).map(pluginImageOutput);
+        } catch (error) {
+            throw classifyImageGenerationError(error);
+        }
+    }
+    if (channel.provider === "seedream") {
+        try {
+            return await requestSeedreamImages(requestConfig, prompt, [], n, responseFormat, options);
+        } catch (error) {
+            throw classifyImageGenerationError(error);
+        }
+    }
+    if (channel.provider === "openrouter") {
+        try {
+            return await requestOpenRouterImages(requestConfig, prompt, [], n, options);
         } catch (error) {
             throw classifyImageGenerationError(error);
         }
@@ -1002,6 +1128,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const selectedModel = config.model || config.imageModel;
     assertModelChannelAvailable(config, selectedModel);
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
+    const channel = resolveModelChannel(config, selectedModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
     const responseFormat = requestedImageResponseFormat(config, selectedModel);
@@ -1028,6 +1155,22 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
                 { signal: options?.signal },
             );
             return normalizePluginImages(result).map(pluginImageOutput);
+        } catch (error) {
+            throw classifyImageGenerationError(error);
+        }
+    }
+    if (channel.provider === "seedream") {
+        if (mask) throw new Error("Seedream 生图暂不支持蒙版编辑");
+        try {
+            return await requestSeedreamImages(requestConfig, requestPrompt, references, n, responseFormat, options);
+        } catch (error) {
+            throw classifyImageGenerationError(error);
+        }
+    }
+    if (channel.provider === "openrouter") {
+        if (mask) throw new Error("OpenRouter Chat Completions 生图暂不支持蒙版编辑");
+        try {
+            return await requestOpenRouterImages(requestConfig, requestPrompt, references, n, options);
         } catch (error) {
             throw classifyImageGenerationError(error);
         }

@@ -5,7 +5,7 @@ import { nanoid } from "nanoid";
 
 export type ApiCallFormat = "openai" | "gemini" | "qwen";
 export type ModelCapability = "image" | "video" | "text" | "audio";
-export type ChannelProvider = "openai" | "new-api" | "openai-compatible" | "gemini" | "qwen" | "custom";
+export type ChannelProvider = "openai" | "new-api" | "openai-compatible" | "openrouter" | "seedream" | "gemini" | "qwen" | "custom";
 export type ChannelAuthType = "bearer" | "none";
 export type ImageResponseFormat = "auto" | "url" | "b64_json";
 export type ImageBatchMode = "auto" | "native" | "split";
@@ -127,6 +127,28 @@ export const channelProviderPresets: ChannelProviderPreset[] = [
         authType: "bearer",
         imageResponseFormat: "auto",
         imageBatchMode: "auto",
+        models: [],
+    },
+    {
+        id: "openrouter",
+        label: "OpenRouter",
+        description: "通过 Chat Completions 多模态格式调用 OpenRouter 文生图与参考图模型。",
+        apiFormat: "openai",
+        baseUrl: "https://openrouter.ai/api/v1",
+        authType: "bearer",
+        imageResponseFormat: "auto",
+        imageBatchMode: "split",
+        models: [],
+    },
+    {
+        id: "seedream",
+        label: "火山方舟 / Seedream",
+        description: "通过火山方舟 /api/v3 的 OpenAI Images 兼容接口调用 Seedream；模型填写推理接入点 ID。",
+        apiFormat: "openai",
+        baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+        authType: "bearer",
+        imageResponseFormat: "url",
+        imageBatchMode: "split",
         models: [],
     },
     {

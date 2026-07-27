@@ -3,7 +3,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 
 import { defaultConfig, encodeChannelModel, type AiConfig, type ImageResponseFormat, type ModelChannel } from "@/stores/use-config-store";
-import { ImageRequestUnknownError, requestGeneration } from "./image";
+import { ImageRequestUnknownError, requestEdit, requestGeneration } from "./image";
 
 const PROVIDER_BASE_URL = "https://image-provider.test";
 const GENERATION_URL = `${PROVIDER_BASE_URL}/v1/images/generations`;
@@ -180,6 +180,74 @@ describe("requestGeneration", () => {
             providerTaskId: "plugin-task",
             providerRequestId: "plugin-request",
         });
+    });
+
+    it("uses OpenRouter Chat Completions and parses message images", async () => {
+        const openRouterUrl = "https://openrouter.test/api/v1/chat/completions";
+        let requestBody: Record<string, unknown> = {};
+        server.use(
+            http.post(openRouterUrl, async ({ request }) => {
+                requestBody = (await request.json()) as Record<string, unknown>;
+                return HttpResponse.json({
+                    id: "openrouter-request",
+                    choices: [{ message: { images: [{ type: "image_url", image_url: { url: "data:image/png;base64,b3BlbnJvdXRlcg==" } }] } }],
+                });
+            }),
+        );
+        const config = createConfig("auto");
+        config.size = "1080x1440";
+        config.quality = "high";
+        config.channels = config.channels.map((channel) => ({ ...channel, provider: "openrouter" as const, baseUrl: "https://openrouter.test/api/v1" }));
+
+        const [result] = await requestGeneration(config, "小红书知识卡");
+
+        expect(requestBody).toMatchObject({
+            model: MODEL_NAME,
+            modalities: ["image", "text"],
+            image_config: { aspect_ratio: "3:4", image_size: "4K" },
+            messages: [{ role: "user", content: [{ type: "text", text: "小红书知识卡" }] }],
+        });
+        expect(result).toMatchObject({ source: "data_url", dataUrl: "data:image/png;base64,b3BlbnJvdXRlcg==", providerRequestId: "openrouter-request" });
+    });
+
+    it("sends a reference image through OpenRouter Chat Completions", async () => {
+        const openRouterUrl = "https://openrouter.test/api/v1/chat/completions";
+        let requestBody: Record<string, unknown> = {};
+        server.use(
+            http.post(openRouterUrl, async ({ request }) => {
+                requestBody = (await request.json()) as Record<string, unknown>;
+                return HttpResponse.json({ choices: [{ message: { images: [{ image_url: { url: "https://cdn.example.test/continued.png" } }] } }] });
+            }),
+        );
+        const config = createConfig("url");
+        config.channels = config.channels.map((channel) => ({ ...channel, provider: "openrouter" as const, baseUrl: "https://openrouter.test/api/v1" }));
+
+        const [result] = await requestEdit(config, "延续风格", [{ id: "ref", name: "ref.png", type: "image/png", dataUrl: "data:image/png;base64,cmVm" }]);
+
+        const messages = requestBody.messages as Array<{ content: Array<{ type: string; image_url?: { url?: string } }> }>;
+        expect(messages[0].content).toContainEqual({ type: "image_url", image_url: { url: "data:image/png;base64,cmVm" } });
+        expect(result).toMatchObject({ source: "remote_url", remoteUrl: "https://cdn.example.test/continued.png" });
+    });
+
+    it("uses the Seedream Images payload without unsupported OpenAI-only fields", async () => {
+        const seedreamUrl = "https://ark.test/api/v3/images/generations";
+        let requestBody: Record<string, unknown> = {};
+        server.use(
+            http.post(seedreamUrl, async ({ request }) => {
+                requestBody = (await request.json()) as Record<string, unknown>;
+                return HttpResponse.json({ data: [{ url: "https://cdn.example.test/seedream.png" }], request_id: "seedream-request" });
+            }),
+        );
+        const config = createConfig("url");
+        config.size = "3:4";
+        config.channels = config.channels.map((channel) => ({ ...channel, provider: "seedream" as const, baseUrl: "https://ark.test/api/v3", imageBatchMode: "split" as const }));
+
+        const [result] = await requestGeneration(config, "海报背景");
+
+        expect(requestBody).toMatchObject({ model: MODEL_NAME, prompt: "海报背景", size: "1024x1360", response_format: "url", stream: false, watermark: false });
+        expect(requestBody).not.toHaveProperty("n");
+        expect(requestBody).not.toHaveProperty("output_format");
+        expect(result).toMatchObject({ source: "remote_url", remoteUrl: "https://cdn.example.test/seedream.png", providerRequestId: "seedream-request" });
     });
 });
 

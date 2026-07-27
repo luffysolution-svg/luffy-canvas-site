@@ -6,6 +6,8 @@ description: 当前版本已实现但仍需人工验证的变更项
 # 待测试
 
 - Netlify 并行部署：确认 Preview 的首页、`/image`、`/video`、`/canvas` 和动态画布路由可直接打开并刷新，静态资源与插件清单无 404；`/api/images/proxy` 的非 POST 请求返回 JSON 405 而不是 SPA HTML，Function 能读取精确域名白名单并流式返回允许的图片，且 HTTP、非白名单、私网解析、跨 Origin、非法 MIME、超限和重定向越界均被拒绝。验证通过后再发布 Production，并确认原 Vercel 站点继续可用。
+- AI 创作审核台 Phase 2：在 `/creation` 切换到「多页卡片」，用一篇 Markdown/文章智能拆成 6 页，验证页面上下排序、增删、标题正文编辑和封面/编辑/分屏/引语独立布局；先完成 Phase 1 提示词批准，再批量生成，确认首张成功图固定为统一风格锚点，部分失败只影响对应页，单独重绘第 3 页时其他 5 页图片和审核状态不变；刷新后项目、6 页内容、图片、风格溯源和审核状态均可恢复。分别切换微信、小红书、X、B站、抖音画板并检查安全区，确认安全区只在编辑/预览显示；执行单页 PNG、多平台 ZIP（含 manifest）、保存资产及当前页/全部页 Canvas 插入，核对精确尺寸、稳定页序、无安全区线框、最终准确文字、页面不重叠和完整来源元数据。另在桌面/移动端及浅色/深色下检查页面列表、画板和编辑器无溢出。
+- AI 创作审核台 Phase 1：进入 `/creation`，输入文章并选择小红书，验证文本模型生成严格结构化方案且必须人工批准；生成并切换 3 个提示词版本，编辑、恢复和对比后再次批准；使用 2–4 个候选位分别选择模型/参数，确认部分失败只重试失败列、问题反馈可进入下一轮提示词、远程结果本地化失败时不误报生图失败；采用候选后插入新建或指定画布，节点保持原比例并带来源任务、提示词版本、模型、参数和审核状态；刷新页面后任务、版本、候选及图片仍可恢复。另分别验证 OpenRouter Chat Completions 与火山方舟 / Seedream 中转渠道、取消长请求、删除历史后的图片引用清理，以及浏览器 CORS/IndexedDB 失败提示。
 - Luffy Canvas 插件迁移与 npm 包：移除旧 `infinite-canvas` 插件、MCP 和 marketplace 后，安装 `luffy-canvas@luffy-canvas-local`；新任务应只加载 `open-luffy-canvas`、`operate-luffy-canvas` 和 `luffy-canvas` MCP。验证 `npx -y @luffysolution/canvas-agent@0.2.0` 可启动网页 Agent，固定版本的 `mcp --profile editor` 可被标准 MCP 客户端加载。
 - Agent 安全连接：验证 pairing code 成功、重复使用失败、过期失败，session token 过期和撤销有效，非允许 Origin 被拒绝；URL、Referrer、日志和永久 `localStorage` 中均不得出现长期 token，自动连接不得关闭写操作确认；MCP 读写结果不得包含媒体 dataURL、签名地址或浏览器存储键，退出 Agent 后不得残留审批租约或 Provider 子进程。
 - MCP Profile：分别验证 `readonly`、`editor`、`generator`、`assets`、`full` 的 `tools/list` 和输入级权限；`editor` 不得通过 `autoRun` 或 `run_generation` 触发生成，删除、生成、附件和素材写入仍需网页确认。
