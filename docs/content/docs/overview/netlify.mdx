@@ -1,0 +1,110 @@
+---
+title: Netlify 部署
+description: 在保留 Vercel 部署的同时使用 Netlify 部署 Luffy Canvas
+---
+
+# Netlify 部署
+
+仓库根目录的 `netlify.toml` 会构建 Vite 前端、发布 SPA，并部署同源图片代理 Function。现有 `vercel.json` 保持独立，两个平台可以并行部署。
+
+AI 生图、视频、音频和文本请求仍由浏览器直连用户配置的第三方接口；Netlify Function 只在远程图片受 CORS 限制时处理 `/api/images/proxy`，不会接收或保存用户 API Key。
+
+## 从 GitHub 导入
+
+1. 在 Netlify 选择 **Add new project → Import an existing project**。
+2. 连接 GitHub，并选择 `luffysolution-svg/luffy-canvas-site`。
+3. 保持仓库根目录为 Base directory，让 Netlify 读取根目录的 `netlify.toml`。
+4. 创建 Deploy Preview，确认通过后再发布 Production Deploy。
+
+配置文件中的实际值如下：
+
+| 配置 | 值 |
+| --- | --- |
+| Build command | `cd web && bun install && bun run build` |
+| Publish directory | `web/dist` |
+| Functions directory | `netlify/functions` |
+| 图片代理路径 | `/api/images/proxy` |
+
+仓库的 Bun lockfile 和现有 CI 没有固定 Bun 或 Node 小版本，因此部署配置也不额外锁定未经项目验证的版本。
+
+## 环境变量
+
+在 **Site configuration → Environment variables** 中设置：
+
+```env
+IMAGE_PROXY_ALLOWED_HOSTS=
+```
+
+值必须填写远程图片结果 URL 实际使用的、由提供商控制的精确域名，多个域名用英文逗号分隔。重定向链中的每一个图片域名也必须列出。不要填写协议、路径、端口、IP、`localhost` 或 `*`，也不要猜测未确认的 CDN 域名。
+
+该变量供 Function 运行时通过 `process.env.IMAGE_PROXY_ALLOWED_HOSTS` 读取。若当前套餐支持变量 Scope，至少勾选 **Functions**；修改变量后重新部署。不要把 `.env`、API Key、Netlify Token 或真实密钥提交到仓库。
+
+## 路由与代理
+
+Netlify Function 使用现代 Web API 入口和自定义 `config.path`。Netlify 的请求链会先匹配 Serverless Functions，再处理 `/* → /index.html` 的 SPA fallback，因此 `/api/images/proxy` 不会被改写成 `index.html`，而 React Router 子路由仍可直接打开和刷新。
+
+Function 不在路由配置中限定请求方法。这样 GET、OPTIONS 等请求也会进入共享代理处理器并收到 JSON 405，而不会绕过 Function 落入 SPA；真正的图片代理仍只允许 POST。共享模块继续执行以下校验：
+
+- 同源 Origin 与 `application/json`；
+- 仅 HTTPS、精确域名白名单、DNS 公网地址与 SSRF 防护；
+- 每次重定向重新校验目标；
+- 图片 MIME、大小、超时与请求体限制。
+
+## 本地与 Preview 验证
+
+先确认 CLI 登录和站点关联：
+
+```bash
+npx netlify status
+npx netlify link
+```
+
+已经关联正确站点时不要重复执行 `netlify link`。本地启动：
+
+```bash
+npx netlify dev
+```
+
+创建非生产 Preview：
+
+```bash
+npx netlify deploy --build
+```
+
+对 CLI 返回的 Preview URL 检查首页、主要子路由、静态资源和 `/api/images/proxy`。GET 代理路径应返回 JSON 405，未配置白名单的合法 POST 应返回 JSON 503；两者都不应返回 HTML。配置真实域名后，再验证允许域名的流式图片、非白名单域名、HTTP、私网解析、跨域 Origin 和重定向目标。
+
+只有 Preview、浏览器 Console/Network 和 Function 日志均通过后，才执行：
+
+```bash
+npx netlify deploy --prod --build
+```
+
+Function 日志可在 Netlify 的 **Logs & Metrics → Functions** 中查看。日志和截图中不要保留签名图片 URL、Token 或 API Key。
+
+## Netlify 与 Vercel 的限制差异
+
+Netlify 当前流式 Function 的平台硬限制为 10 秒和 20 MB；本项目在 Netlify 入口预留余量，使用 9 秒和 19,000,000 字节。Vercel 入口继续使用共享模块原有的 55 秒和 64 MiB 应用限制，互不影响。
+
+上游提供 `Content-Length` 且超过 Netlify 上限时，代理会在发送图片前返回明确的 JSON 413。上游未提供长度时只能边读边计数；一旦超过 19,000,000 字节或 9 秒，流会被中止，浏览器的 Blob 读取会失败，不会保存截断图片。由于响应头已经发出，此场景无法再改成 JSON 错误，这是流式响应的协议限制。
+
+Netlify 普通缓冲响应的限制为 6 MB，本代理使用 `ReadableStream`，但仍不能突破上述 20 MB 流式上限。相关平台说明见 [Functions API](https://docs.netlify.com/build/functions/api/#streaming-responses) 与 [Functions configuration](https://docs.netlify.com/build/functions/configuration/#default-values)。
+
+## 自定义域名与浏览器本地数据
+
+在 Netlify 的 **Domain management** 添加自定义域名，完成 DNS 校验后再切换流量。保留 Vercel 部署直到 Netlify 生产验收完成，可随时把 DNS 切回原站点。
+
+IndexedDB、LocalStorage、画布、素材、生成记录和浏览器内 API 配置都与 Origin 绑定。从 `*.vercel.app` 切换到 `*.netlify.app` 会形成新的 Origin，这些数据不会自动迁移。只有继续使用原来的自定义域名和协议，浏览器同源数据才可能继续保留；切换前应先按产品现有导出能力备份重要内容。
+
+## 常见故障
+
+- API 返回 `index.html`：确认本次 Deploy 已包含 `netlify/functions/image-proxy.mts`，并检查 Function 构建日志与 `config.path`；不要给路由配置增加只匹配 POST 的 `method`。
+- 返回 503：`IMAGE_PROXY_ALLOWED_HOSTS` 未设置、Scope 不含 Functions，或填写值均因通配符、协议、端口等格式被拒绝。
+- 返回 403：检查浏览器 Origin、目标域名、重定向域名和 DNS 解析结果；不要通过放宽白名单或关闭 SSRF 校验规避。
+- 返回 413 或流读取失败：图片超过 Netlify 代理上限；改用更小的结果、提供商直连下载或继续使用 Vercel，不要静默截断。
+- 返回 504：远程图片未在 Netlify 的 9 秒代理窗口内完成。
+- 子路由 404：确认 `netlify.toml` 的 SPA fallback 存在且 Publish directory 为 `web/dist`。
+- 构建找不到 Bun：检查 Deploy 日志与 Netlify 当前构建镜像；如确需设置 `BUN_VERSION`，先用项目 lockfile、CI 和本地测试验证对应版本。
+
+## 回滚
+
+代码回滚可撤销 Netlify 适配提交并重新部署；Netlify 也可以在 Deploys 中重新发布上一个成功版本。若已切换自定义域名，同时把 DNS 恢复到原 Vercel 目标。移除或回滚 Netlify 部署不会修改 `vercel.json`，也不会影响仍在运行的 Vercel 站点。
