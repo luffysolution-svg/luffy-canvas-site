@@ -17,7 +17,7 @@ export const PROMPT_GARDEN_LINKS = [
     },
 ] as const;
 
-export function PromptGardenLinks({ compact = false }: { compact?: boolean }) {
+export function PromptGardenLinks({ compact = false, stacked = false }: { compact?: boolean; stacked?: boolean }) {
     return (
         <section className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 dark:border-emerald-900 dark:bg-emerald-950/20" aria-label="Prompt Garden 提示词库">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -27,7 +27,7 @@ export function PromptGardenLinks({ compact = false }: { compact?: boolean }) {
                 </div>
                 <span className="rounded-full border border-emerald-200 bg-white/80 px-2 py-0.5 text-[11px] text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200">外部灵感库</span>
             </div>
-            <div className={`mt-3 grid gap-2 ${compact ? "sm:grid-cols-2" : "md:grid-cols-2"}`}>
+            <div className={`mt-3 grid gap-2 ${compact && !stacked ? "sm:grid-cols-2" : compact ? "" : "md:grid-cols-2"}`}>
                 {PROMPT_GARDEN_LINKS.map((item) => {
                     const Icon = item.icon;
                     return (

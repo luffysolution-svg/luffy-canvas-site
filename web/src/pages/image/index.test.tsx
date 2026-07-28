@@ -1,4 +1,5 @@
 import { App } from "antd";
+import { StrictMode } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,7 @@ const mocks = vi.hoisted(() => {
     return {
         addAsset: vi.fn(),
         clearImageCommand: vi.fn(),
+        consumeImagePrompt: vi.fn(),
         copyText: vi.fn(),
         deleteStoredImages: vi.fn(),
         downloadImageBlob: vi.fn(),
@@ -47,6 +49,10 @@ vi.mock("@/components/model-picker", () => ({
 
 vi.mock("@/components/prompts/prompt-select-dialog", () => ({
     PromptSelectDialog: () => null,
+}));
+
+vi.mock("@/components/prompts/image-prompt-optimizer", () => ({
+    ImagePromptOptimizerDialog: () => null,
 }));
 
 vi.mock("@/components/canvas/asset-picker-modal", () => ({
@@ -103,6 +109,10 @@ vi.mock("@/services/api/image-batch", () => ({
     requestImageBatch: mocks.requestImageBatch,
 }));
 
+vi.mock("@/services/prompt-optimizer-transfer", () => ({
+    consumeImagePrompt: mocks.consumeImagePrompt,
+}));
+
 vi.mock("@/services/image-storage", () => ({
     deleteStoredImages: mocks.deleteStoredImages,
     downloadImageBlob: mocks.downloadImageBlob,
@@ -131,8 +141,24 @@ describe("ImagePage", () => {
         mocks.logStore.iterate.mockResolvedValue(undefined);
         mocks.logStore.removeItem.mockResolvedValue(undefined);
         mocks.logStore.setItem.mockImplementation(async (_key, value) => value);
+        mocks.consumeImagePrompt.mockReturnValue("");
         mocks.resolveImageUrl.mockImplementation(async (_storageKey, fallback = "") => fallback);
         mocks.readImageMeta.mockResolvedValue({ width: 1024, height: 1024, mimeType: "image/png" });
+    });
+
+    it("consumes a staged optimized prompt into the image prompt field", async () => {
+        mocks.consumeImagePrompt.mockReturnValueOnce("电影感海边日落，16:9");
+
+        render(
+            <StrictMode>
+                <App>
+                    <ImagePage />
+                </App>
+            </StrictMode>,
+        );
+
+        expect(await screen.findByPlaceholderText("描述画面主体、风格、构图、光线和用途")).toHaveValue("电影感海边日落，16:9");
+        expect(mocks.consumeImagePrompt).toHaveBeenCalledTimes(2);
     });
 
     it("keeps a generated Base64 result visible when IndexedDB persistence fails", async () => {

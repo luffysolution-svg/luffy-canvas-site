@@ -1,4 +1,4 @@
-import type { AiConfig } from "@/stores/use-config-store";
+import { modelMatchesCapability, type AiConfig } from "@/stores/use-config-store";
 import { requestImageQuestion, type AiTextMessage } from "./image";
 
 export type ImagePromptOptimizationMode = "general" | "chinese" | "photography" | "poster";
@@ -77,16 +77,13 @@ export function buildImagePromptOptimizationMessages(options: Omit<OptimizeImage
 }
 
 export async function optimizeImagePrompt(options: OptimizeImagePromptOptions) {
-    const textModel = options.config.textModel.trim();
-    if (!textModel) throw new Error("请先配置文本模型");
     if (!options.prompt.trim()) throw new Error("请输入需要优化的提示词");
 
-    const answer = await requestImageQuestion(
-        { ...options.config, model: textModel },
-        buildImagePromptOptimizationMessages(options),
-        options.onDelta || (() => undefined),
-        { signal: options.signal },
-    );
+    const textModel = options.config.textModel.trim();
+    if (!textModel) throw new Error("请先配置文本模型");
+    if (!modelMatchesCapability(options.config, textModel, "text")) throw new Error("请选择具备文本能力的模型");
+
+    const answer = await requestImageQuestion({ ...options.config, model: textModel }, buildImagePromptOptimizationMessages(options), options.onDelta || (() => undefined), { signal: options.signal });
     return normalizeOptimizedPrompt(answer);
 }
 
@@ -96,14 +93,21 @@ export function normalizeOptimizedPrompt(value: string) {
     if (fenced) result = fenced[1].trim();
 
     try {
-        const parsed = JSON.parse(result) as Record<string, unknown>;
-        const candidate = parsed.optimizedPrompt ?? parsed.prompt ?? parsed.content ?? parsed.result;
-        if (typeof candidate === "string") result = candidate.trim();
+        const parsed: unknown = JSON.parse(result);
+        if (typeof parsed === "string") {
+            result = parsed.trim();
+        } else if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            const record = parsed as Record<string, unknown>;
+            const candidate = record.optimizedPrompt ?? record.optimized_prompt ?? record.prompt ?? record.content ?? record.result ?? record.text ?? record.output_text ?? record.output;
+            result = typeof candidate === "string" ? candidate.trim() : "";
+        } else {
+            result = "";
+        }
     } catch {
         // The preferred response is plain text; non-JSON content needs no repair.
     }
 
     result = result.replace(/^(?:优化后的提示词|优化结果|提示词)\s*[:：]\s*/i, "").trim();
-    if (!result) throw new Error("文本模型没有返回有效的优化结果");
+    if (!result || result === "没有返回内容") throw new Error("文本模型没有返回有效的优化结果");
     return result;
 }

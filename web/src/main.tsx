@@ -6,8 +6,6 @@ import "./styles/globals.css";
 import { RouterProvider } from "react-router-dom";
 
 import { AppProviders } from "@/components/layout/app-providers";
-import { ImagePromptOptimizerBridge } from "@/components/prompts/image-prompt-optimizer";
-import { PromptOptimizerTransferBridge } from "@/components/prompts/prompt-optimizer-transfer-bridge";
 import { initAnalytics } from "@/lib/analytics";
 import { router } from "@/router";
 
@@ -19,8 +17,6 @@ createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
         <AppProviders>
             <RouterProvider router={router} />
-            <ImagePromptOptimizerBridge />
-            <PromptOptimizerTransferBridge />
         </AppProviders>
     </React.StrictMode>,
 );
