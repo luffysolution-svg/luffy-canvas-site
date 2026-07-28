@@ -10,7 +10,8 @@ export const localForageStorage: StateStorage = {
     getItem: async (name) => {
         if (typeof window === "undefined") return null;
         try {
-            return (await localforage.getItem<string>(name)) || null;
+            const value = await localforage.getItem<string>(name);
+            return value ?? window.localStorage.getItem(name);
         } catch {
             return window.localStorage.getItem(name);
         }
@@ -21,14 +22,21 @@ export const localForageStorage: StateStorage = {
             await localforage.setItem(name, value);
         } catch {
             window.localStorage.setItem(name, value);
+            return;
+        }
+        try {
+            window.localStorage.removeItem(name);
+        } catch {
+            // IndexedDB already contains the authoritative value.
         }
     },
     removeItem: async (name) => {
         if (typeof window === "undefined") return;
+        await localforage.removeItem(name).catch(() => undefined);
         try {
-            await localforage.removeItem(name);
-        } catch {
             window.localStorage.removeItem(name);
+        } catch {
+            // Best effort: the primary IndexedDB copy is already removed.
         }
     },
 };

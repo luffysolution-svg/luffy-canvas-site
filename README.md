@@ -23,6 +23,7 @@ Luffy Canvas 基于 [basketikun/infinite-canvas](https://github.com/basketikun/i
 
 - 多画布项目、节点编排、连线、缩放、导入与导出。
 - 图片、视频、音频和文本生成工作台。
+- 生图工作台内置平台预设、设计 Skill、智能推荐、最终 Prompt 编译与系列规划；详见[设计系统说明](docs/content/docs/overview/image-design-workbench.mdx)。
 - 提示词库、素材管理与浏览器本地持久化。
 - 自有 Luffy Canvas Agent、标准 MCP、Codex 插件和 Skills。
 - Codex 与 Claude Code 网页侧边栏，以及 WorkBuddy 等标准 MCP 客户端接入。
@@ -54,3 +55,4 @@ Agent 与客户端配置见：
 - 许可证：[GNU AGPL v3.0](LICENSE)
 - 上游项目：<https://github.com/basketikun/infinite-canvas>
 - 修改与归属说明：[NOTICE](NOTICE)
+- Baoyu Skills 转译来源：[第三方说明](docs/third-party/baoyu-skills.md)

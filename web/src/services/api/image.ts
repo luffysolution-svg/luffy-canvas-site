@@ -24,10 +24,7 @@ type ResponseToolCall = {
     thoughtSignature?: string;
 };
 
-type ResponseInputMessage =
-    | AiTextMessage
-    | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string }
-    | { role: "tool"; tool_call_id: string; content: string };
+type ResponseInputMessage = AiTextMessage | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string } | { role: "tool"; tool_call_id: string; content: string };
 
 type ResponseFunctionTool = {
     type: "function";
@@ -47,10 +44,7 @@ type ToolResponseResult = {
 type ToolChoice = "auto" | "required" | { type: "function"; name: string };
 type ResponseMessageContent = AiTextMessage["content"] | string;
 type ResponseInputContent = { type: "input_text"; text: string } | { type: "input_image"; image_url: string };
-type ResponseInputItem =
-    | { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] }
-    | { type: "function_call"; call_id: string; name: string; arguments: string }
-    | { type: "function_call_output"; call_id: string; output: string };
+type ResponseInputItem = { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] } | { type: "function_call"; call_id: string; name: string; arguments: string } | { type: "function_call_output"; call_id: string; output: string };
 type ResponseApiToolDefinition = {
     type: "function";
     name: string;
@@ -58,9 +52,7 @@ type ResponseApiToolDefinition = {
     parameters: Record<string, unknown>;
     strict?: boolean;
 };
-type ResponseApiOutputItem =
-    | { type?: "message"; content?: Array<{ type?: string; text?: string }> }
-    | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
+type ResponseApiOutputItem = { type?: "message"; content?: Array<{ type?: string; text?: string }> } | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
 type ResponseApiPayload = {
     id?: string;
     output?: ResponseApiOutputItem[];
@@ -113,6 +105,16 @@ type GeminiPayload = {
 };
 type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; error?: string };
 export type RequestOptions = { signal?: AbortSignal };
+export type ImageRequestMappingKind = "exact" | "same-ratio" | "closest-ratio" | "scaled" | "unverified";
+export type ImageRequestParameters = {
+    requestedSize: string;
+    requestedAspectRatio?: string;
+    resolvedSize?: string;
+    resolvedAspectRatio?: string;
+    mappingKind: ImageRequestMappingKind;
+    warnings: string[];
+    requiresConfirmation: boolean;
+};
 
 const QUALITY_BASE: Record<string, number> = {
     low: 1024,
@@ -198,7 +200,6 @@ function parseImageDimensions(value: string) {
 
 function validateImageSize(width: number, height: number) {
     if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) throw new Error("图像尺寸必须是正整数，例如 1024x1024");
-    if (width % IMAGE_SIZE_STEP !== 0 || height % IMAGE_SIZE_STEP !== 0) throw new Error("图像尺寸的宽高必须是 16 的倍数，请调整尺寸");
     if (Math.max(width, height) > IMAGE_MAX_EDGE) throw new Error("图像尺寸最长边不能超过 3840px，请调整尺寸");
     if (Math.max(width, height) / Math.min(width, height) > IMAGE_MAX_RATIO) throw new Error("图像宽高比不能超过 3:1，请调整尺寸");
     const pixels = width * height;
@@ -217,18 +218,31 @@ function resolveRequestSize(quality: string | undefined, size: string) {
     throw new Error("图像尺寸格式不支持，请使用 auto、9:16 或 1024x1024");
 }
 
+function isQwenImage2Model(model: string) {
+    return model.toLowerCase().includes("qwen-image-2.0");
+}
+
+function isQwenCappedEditModel(model: string) {
+    const value = model.toLowerCase();
+    return value.includes("qwen-image-edit-max") || value.includes("qwen-image-edit-plus");
+}
+
+function isLegacyQwenEditModel(model: string) {
+    const value = model.toLowerCase();
+    return (value === "qwen-image-edit" || value.startsWith("qwen-image-edit-")) && !isQwenCappedEditModel(value);
+}
+
+function usesQwenFixedSizes(model: string) {
+    const value = model.toLowerCase();
+    return !isQwenImage2Model(value) && !value.includes("edit") && ["qwen-image-max", "qwen-image-plus", "qwen-image"].some((name) => value === name || value.startsWith(`${name}-`));
+}
+
 function resolveQwenRequestSize(model: string, quality: string | undefined, size: string) {
-    const normalizedModel = model.toLowerCase();
-    const isQwenImage2 = normalizedModel.includes("qwen-image-2.0");
-    const capsEdgesAt2K = normalizedModel.includes("qwen-image-edit-max") || normalizedModel.includes("qwen-image-edit-plus");
-    const resolved = isQwenImage2
-        ? resolveQwenImage2Size(quality === "high" ? "medium" : quality, size)
-        : capsEdgesAt2K
-          ? resolveQwenEditSize(quality === "high" ? "medium" : quality, size)
-          : resolveRequestSize(quality, size);
+    const isQwenImage2 = isQwenImage2Model(model);
+    const capsEdgesAt2K = isQwenCappedEditModel(model);
+    const resolved = isQwenImage2 ? resolveQwenImage2Size(quality === "high" ? "medium" : quality, size) : capsEdgesAt2K ? resolveQwenEditSize(quality === "high" ? "medium" : quality, size) : resolveRequestSize(quality, size);
     const dimensions = resolved ? parseImageDimensions(resolved) : null;
-    const usesFixedSizes = !isQwenImage2 && !normalizedModel.includes("edit") && ["qwen-image-max", "qwen-image-plus", "qwen-image"].some((name) => normalizedModel === name || normalizedModel.startsWith(`${name}-`));
-    if (usesFixedSizes && dimensions) {
+    if (usesQwenFixedSizes(model) && dimensions) {
         const ratio = dimensions.width / dimensions.height;
         const sizes = [
             { ratio: 16 / 9, value: "1664x928" },
@@ -304,14 +318,8 @@ function assertQwenEditSize(width: number, height: number) {
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 512 || width > 2048 || height < 512 || height > 2048) throw new Error("Qwen-Image Edit Max / Plus 的宽和高需分别在 512 到 2048 之间");
 }
 
-function resolveGeminiImageConfig(config: AiConfig) {
-    const value = config.size.trim();
-    const dimensions = parseImageDimensions(value);
-    const ratio = dimensions ? `${dimensions.width}:${dimensions.height}` : value;
-    const capabilities = geminiImageCapabilities(config.model);
-    const aspectRatio = value && value.toLowerCase() !== "auto" ? closestGeminiAspectRatio(ratio, capabilities.ratios) : undefined;
-    const imageSize = resolveGeminiImageSize(config.quality, dimensions, capabilities.sizes);
-    const image = { ...(aspectRatio ? { aspectRatio } : {}), ...(imageSize ? { imageSize } : {}) };
+function buildGeminiImageConfig(parameters: ImageRequestParameters) {
+    const image = { ...(parameters.resolvedAspectRatio ? { aspectRatio: parameters.resolvedAspectRatio } : {}), ...(parameters.resolvedSize ? { imageSize: parameters.resolvedSize } : {}) };
     return Object.keys(image).length ? { responseFormat: { image } } : {};
 }
 
@@ -333,10 +341,11 @@ function closestGeminiAspectRatio(value: string, supportedRatios: string[]) {
     });
 }
 
-function resolveGeminiImageSize(quality: string, dimensions: { width: number; height: number } | null, supportedSizes: string[]) {
+function resolveGeminiImageSize(quality: string, dimensions: { width: number; height: number } | null, supportedSizes: string[], requestedSize: string) {
     if (!supportedSizes.length) return undefined;
     const normalizedQuality = normalizeQuality(quality);
-    let requested = normalizedQuality ? GEMINI_IMAGE_SIZE_BY_QUALITY[normalizedQuality] : undefined;
+    const nativeSize = Object.keys(GEMINI_IMAGE_SIZE_PIXELS).find((size) => size.toLowerCase() === requestedSize.trim().toLowerCase());
+    let requested = nativeSize || (normalizedQuality ? GEMINI_IMAGE_SIZE_BY_QUALITY[normalizedQuality] : undefined);
     if (!requested && dimensions) {
         const edge = Math.max(dimensions.width, dimensions.height);
         requested = edge <= 768 ? "512" : edge <= 1536 ? "1K" : edge <= 3072 ? "2K" : "4K";
@@ -344,6 +353,165 @@ function resolveGeminiImageSize(quality: string, dimensions: { width: number; he
     if (!requested) return undefined;
     const requestedPixels = GEMINI_IMAGE_SIZE_PIXELS[requested];
     return supportedSizes.reduce((best, item) => (Math.abs(GEMINI_IMAGE_SIZE_PIXELS[item] - requestedPixels) < Math.abs(GEMINI_IMAGE_SIZE_PIXELS[best] - requestedPixels) ? item : best));
+}
+
+export function resolveImageRequestParameters(config: AiConfig, requestedSize = config.size): ImageRequestParameters {
+    const selectedModel = config.model || config.imageModel;
+    const requestConfig = resolveModelRequestConfig(config, selectedModel);
+    const value = requestedSize.trim() || "auto";
+    const requestedAspectRatio = aspectRatioFromRequestSize(value) || config.imageAspectRatio;
+    const quality = normalizeQuality(config.quality);
+
+    if (requestConfig.apiFormat === "gemini") return resolveGeminiRequestParameters(requestConfig, value, requestedAspectRatio);
+    if (requestConfig.apiFormat === "qwen") return resolveQwenRequestParameters(requestConfig.model, quality, value, requestedAspectRatio);
+    const channel = resolveModelChannel(config, selectedModel);
+    const fixedOpenAiSizes = channel.provider === "openai" ? openAiFixedImageSizes(requestConfig.model) : null;
+    if (fixedOpenAiSizes) return resolveFixedOpenAiRequestParameters(value, requestedAspectRatio, fixedOpenAiSizes);
+
+    const resolvedSize = resolveRequestSize(quality, value);
+    const resolvedAspectRatio = aspectRatioFromResolvedSize(resolvedSize);
+    const knownFlexibleOpenAiModel = requestConfig.model.toLowerCase().includes("gpt-image-2");
+    const unverified = Boolean(resolveModelScript(config, selectedModel, "image")) || channel.provider !== "openai" || !knownFlexibleOpenAiModel;
+    const resolvedMappingKind = classifySizeMapping(value, requestedAspectRatio, resolvedSize, resolvedAspectRatio);
+    const mappingKind = unverified ? "unverified" : resolvedMappingKind;
+    const warnings = mappingWarnings(value, requestedAspectRatio, resolvedSize, resolvedAspectRatio, resolvedMappingKind);
+    if (unverified) {
+        warnings.push(channel.provider === "openai" ? "当前 OpenAI 图片型号未声明可验证的灵活尺寸能力，尺寸会按解析结果传递，请在生成前确认。" : "当前为 OpenAI 兼容或自定义调用，尺寸会按解析结果原样传递，但端点是否支持无法预先验证。");
+    }
+    return imageRequestParameters(value, requestedAspectRatio, resolvedSize, resolvedAspectRatio, mappingKind, warnings);
+}
+
+function openAiFixedImageSizes(model: string) {
+    const value = model.toLowerCase();
+    if (value.includes("dall-e-2")) return ["1024x1024"];
+    if (value.includes("gpt-image-1") || value.includes("chatgpt-image-latest") || value.includes("dall-e-3")) return ["1024x1024", "1024x1536", "1536x1024"];
+    return null;
+}
+
+function resolveFixedOpenAiRequestParameters(requestedSize: string, requestedAspectRatio: string | undefined, sizes: string[]): ImageRequestParameters {
+    if (requestedSize.toLowerCase() === "auto") return imageRequestParameters(requestedSize, undefined, undefined, undefined, "exact", []);
+    const targetRatio = requestedAspectRatio ? ratioNumber(requestedAspectRatio) : 1;
+    const resolvedSize = sizes.reduce((best, current) => {
+        const bestRatio = ratioNumber(aspectRatioFromResolvedSize(best) || "1:1");
+        const currentRatio = ratioNumber(aspectRatioFromResolvedSize(current) || "1:1");
+        return Math.abs(currentRatio - targetRatio) < Math.abs(bestRatio - targetRatio) ? current : best;
+    });
+    const resolvedAspectRatio = aspectRatioFromResolvedSize(resolvedSize);
+    const mappingKind: ImageRequestMappingKind = requestedSize === resolvedSize ? "exact" : requestedAspectRatio && resolvedAspectRatio && aspectRatiosEqual(requestedAspectRatio, resolvedAspectRatio) ? "scaled" : "closest-ratio";
+    const warnings = mappingWarnings(requestedSize, requestedAspectRatio, resolvedSize, resolvedAspectRatio, mappingKind);
+    warnings.push(`当前 OpenAI 模型使用固定尺寸档位，实际请求为 ${resolvedSize}。`);
+    return imageRequestParameters(requestedSize, requestedAspectRatio, resolvedSize, resolvedAspectRatio, mappingKind, warnings);
+}
+
+function ratioNumber(value: string) {
+    const ratio = parseRatioValue(value);
+    return ratio.width / ratio.height;
+}
+
+function resolveGeminiRequestParameters(config: AiConfig, requestedSize: string, requestedAspectRatio?: string): ImageRequestParameters {
+    const dimensions = parseImageDimensions(requestedSize);
+    const capabilities = geminiImageCapabilities(config.model);
+    const resolvedAspectRatio = requestedAspectRatio ? closestGeminiAspectRatio(dimensions ? `${dimensions.width}:${dimensions.height}` : requestedAspectRatio, capabilities.ratios) : undefined;
+    const resolvedSize = resolveGeminiImageSize(config.quality, dimensions, capabilities.sizes, requestedSize);
+    let mappingKind: ImageRequestMappingKind = "exact";
+    if (requestedAspectRatio && resolvedAspectRatio && !aspectRatiosEqual(requestedAspectRatio, resolvedAspectRatio)) mappingKind = "closest-ratio";
+    else if (dimensions && !resolvedSize) mappingKind = "unverified";
+    else if (dimensions) mappingKind = "scaled";
+
+    const warnings = mappingWarnings(requestedSize, requestedAspectRatio, resolvedSize, resolvedAspectRatio, mappingKind);
+    if (mappingKind === "scaled") warnings.push(`Gemini 不接收精确像素尺寸，实际请求使用 ${resolvedSize || "模型默认尺寸"} 与 ${resolvedAspectRatio || "模型默认比例"}。`);
+    if (mappingKind === "unverified") warnings.push("当前 Gemini 模型没有已知的图像尺寸档位，精确像素将由模型决定。");
+    return imageRequestParameters(requestedSize, requestedAspectRatio, resolvedSize, resolvedAspectRatio, mappingKind, warnings);
+}
+
+function resolveQwenRequestParameters(model: string, quality: string | undefined, requestedSize: string, requestedAspectRatio?: string): ImageRequestParameters {
+    if (isLegacyQwenEditModel(model) && requestedSize.toLowerCase() !== "auto") {
+        return imageRequestParameters(requestedSize, requestedAspectRatio, undefined, undefined, "unverified", ["旧版 Qwen 图片编辑接口不接收尺寸参数，实际尺寸将由模型决定。"]);
+    }
+
+    const resolvedSize = resolveQwenRequestSize(model, quality, requestedSize);
+    const resolvedAspectRatio = aspectRatioFromResolvedSize(resolvedSize);
+    const mappingKind = classifySizeMapping(requestedSize, requestedAspectRatio, resolvedSize, resolvedAspectRatio);
+    const warnings = mappingWarnings(requestedSize, requestedAspectRatio, resolvedSize, resolvedAspectRatio, mappingKind);
+    if (usesQwenFixedSizes(model) && requestedSize.toLowerCase() !== "auto" && resolvedSize !== requestedSize) warnings.push(`当前 Qwen 模型仅支持固定尺寸，实际请求使用 ${resolvedSize}。`);
+    if (quality === "high" && (isQwenImage2Model(model) || isQwenCappedEditModel(model))) warnings.push("当前 Qwen 模型按 2K 上限解析尺寸，高质量设置不会扩大到 4K。");
+    return imageRequestParameters(requestedSize, requestedAspectRatio, resolvedSize, resolvedAspectRatio, mappingKind, warnings);
+}
+
+function imageRequestParameters(requestedSize: string, requestedAspectRatio: string | undefined, resolvedSize: string | undefined, resolvedAspectRatio: string | undefined, mappingKind: ImageRequestMappingKind, warnings: string[]): ImageRequestParameters {
+    return {
+        requestedSize,
+        requestedAspectRatio,
+        resolvedSize,
+        resolvedAspectRatio,
+        mappingKind,
+        warnings: Array.from(new Set(warnings)),
+        requiresConfirmation: mappingKind === "closest-ratio" || mappingKind === "scaled" || mappingKind === "unverified",
+    };
+}
+
+function classifySizeMapping(requestedSize: string, requestedAspectRatio?: string, resolvedSize?: string, resolvedAspectRatio?: string): ImageRequestMappingKind {
+    if (requestedSize.toLowerCase() === "auto" || (!resolvedSize && !requestedAspectRatio)) return "exact";
+    if (requestedSize === resolvedSize && (!requestedAspectRatio || !resolvedAspectRatio || aspectRatiosEqual(requestedAspectRatio, resolvedAspectRatio))) return "exact";
+    if (requestedAspectRatio && resolvedAspectRatio && !aspectRatiosClose(requestedAspectRatio, resolvedAspectRatio)) return "closest-ratio";
+    if (parseImageDimensions(requestedSize) && requestedSize !== resolvedSize) return "scaled";
+    return resolvedSize ? "same-ratio" : "unverified";
+}
+
+function mappingWarnings(requestedSize: string, requestedAspectRatio: string | undefined, resolvedSize: string | undefined, resolvedAspectRatio: string | undefined, mappingKind: ImageRequestMappingKind) {
+    const warnings: string[] = [];
+    if (mappingKind === "closest-ratio") warnings.push(`请求比例 ${requestedAspectRatio || requestedSize} 已映射为最接近的 ${resolvedAspectRatio || "模型默认比例"}${resolvedSize ? `（${resolvedSize}）` : ""}。`);
+    if (mappingKind === "scaled") warnings.push(`请求尺寸 ${requestedSize} 已映射为 ${resolvedSize || "模型默认尺寸"}。`);
+    if (mappingKind === "same-ratio" && requestedAspectRatio && resolvedAspectRatio && !aspectRatiosEqual(requestedAspectRatio, resolvedAspectRatio)) {
+        warnings.push(`请求比例 ${requestedAspectRatio} 因模型尺寸或像素对齐实际解析为 ${resolvedAspectRatio}${resolvedSize ? `（${resolvedSize}）` : ""}。`);
+    }
+    return warnings;
+}
+
+function aspectRatioFromRequestSize(value: string) {
+    if (!value || value.toLowerCase() === "auto") return undefined;
+    const dimensions = parseImageDimensions(value);
+    if (dimensions && dimensions.width > 0 && dimensions.height > 0) return reducedAspectRatio(dimensions.width, dimensions.height);
+    if (!value.includes(":")) return undefined;
+    const ratio = parseRatioValue(value);
+    return `${formatRatioPart(ratio.width)}:${formatRatioPart(ratio.height)}`;
+}
+
+function aspectRatioFromResolvedSize(value?: string) {
+    const dimensions = value ? parseImageDimensions(value) : null;
+    return dimensions && dimensions.width > 0 && dimensions.height > 0 ? reducedAspectRatio(dimensions.width, dimensions.height) : undefined;
+}
+
+function reducedAspectRatio(width: number, height: number) {
+    const divisor = greatestCommonDivisor(width, height);
+    return `${width / divisor}:${height / divisor}`;
+}
+
+function greatestCommonDivisor(left: number, right: number) {
+    let a = Math.abs(Math.round(left));
+    let b = Math.abs(Math.round(right));
+    while (b) [a, b] = [b, a % b];
+    return a || 1;
+}
+
+function formatRatioPart(value: number) {
+    return Number(value.toFixed(6)).toString();
+}
+
+function aspectRatiosEqual(left: string, right: string) {
+    return aspectRatioDifference(left, right) < 1e-8;
+}
+
+function aspectRatiosClose(left: string, right: string) {
+    return aspectRatioDifference(left, right) <= 0.01;
+}
+
+function aspectRatioDifference(left: string, right: string) {
+    const leftRatio = parseRatioValue(left);
+    const rightRatio = parseRatioValue(right);
+    const expected = leftRatio.width / leftRatio.height;
+    const actual = rightRatio.width / rightRatio.height;
+    return Math.abs(actual - expected) / expected;
 }
 
 function resolveImageOutput(item: Record<string, unknown>, metadata: ImageProviderMetadata): ImageGenerationOutput | null {
@@ -371,10 +539,7 @@ function parseImagePayload(payload: ImageApiResponse, headers?: unknown) {
         throw new Error(payload.msg || "请求失败");
     }
     const metadata = responseProviderMetadata(payload, headers);
-    const images =
-        payload.data
-            ?.map((item) => resolveImageOutput(item, metadata))
-            .filter((value): value is ImageGenerationOutput => Boolean(value)) || [];
+    const images = payload.data?.map((item) => resolveImageOutput(item, metadata)).filter((value): value is ImageGenerationOutput => Boolean(value)) || [];
 
     if (images.length === 0) {
         throw new ImageGenerationError("接口没有返回图片", { failureStage: "response_parse", kind: "response_parse" });
@@ -649,12 +814,7 @@ async function requestStreamingResponse(config: AiConfig, body: Record<string, u
 }
 
 function toGeminiBody(config: AiConfig, messages: ResponseInputMessage[], extra?: Record<string, unknown>) {
-    const systemText = [
-        config.systemPrompt.trim(),
-        ...messages.flatMap((message) => (!("type" in message) && message.role === "system" ? [geminiTextContent(message.content)] : [])),
-    ]
-        .filter(Boolean)
-        .join("\n\n");
+    const systemText = [config.systemPrompt.trim(), ...messages.flatMap((message) => (!("type" in message) && message.role === "system" ? [geminiTextContent(message.content)] : []))].filter(Boolean).join("\n\n");
     const contents = toGeminiContents(messages.filter((message) => ("type" in message ? true : message.role !== "system")));
     return {
         contents,
@@ -714,10 +874,7 @@ function toGeminiToolOptions(tools: ResponseFunctionTool[], toolChoice: ToolChoi
         description: tool.function.description,
         parameters: tool.function.parameters,
     }));
-    const functionCallingConfig =
-        typeof toolChoice === "object"
-            ? { mode: "ANY", allowedFunctionNames: [toolChoice.name] }
-            : { mode: toolChoice === "required" ? "ANY" : "AUTO" };
+    const functionCallingConfig = typeof toolChoice === "object" ? { mode: "ANY", allowedFunctionNames: [toolChoice.name] } : { mode: toolChoice === "required" ? "ANY" : "AUTO" };
     return {
         tools: [{ functionDeclarations }],
         toolConfig: { functionCallingConfig },
@@ -802,12 +959,12 @@ function parseGeminiToolResponse(payload: GeminiPayload): ToolResponseResult {
     return { content, toolCalls };
 }
 
-async function requestGeminiImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, options?: RequestOptions) {
+async function requestGeminiImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, parameters: ImageRequestParameters, options?: RequestOptions) {
     const concurrency = references.length || config.quality.toLowerCase() === "high" || /4k/i.test(config.size) ? 1 : 2;
-    return (await runLimitedRequests(count, concurrency, () => requestGeminiImagesOnce(config, prompt, references, options))).flat();
+    return (await runLimitedRequests(count, concurrency, () => requestGeminiImagesOnce(config, prompt, references, parameters, options))).flat();
 }
 
-async function requestGeminiImagesOnce(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
+async function requestGeminiImagesOnce(config: AiConfig, prompt: string, references: ReferenceImage[], parameters: ImageRequestParameters, options?: RequestOptions) {
     const parts: GeminiPart[] = [{ text: prompt }];
     for (const image of references) {
         parts.push(toGeminiImagePart(await imageToDataUrl(image)));
@@ -817,7 +974,7 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
             axios.post<GeminiPayload>(
                 geminiApiUrl(config, "generateContent"),
                 {
-                    ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...resolveGeminiImageConfig(config) } }),
+                    ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...buildGeminiImageConfig(parameters) } }),
                     contents: [{ role: "user", parts }],
                 },
                 { headers: geminiHeaders(config), signal: options?.signal },
@@ -878,7 +1035,7 @@ async function requestQwenImages(config: AiConfig, prompt: string, references: R
     content.push({ text: withSystemPrompt(config, prompt) });
     const model = config.model.toLowerCase();
     const maxBatchSize = ["qwen-image-2.0", "qwen-image-edit-max", "qwen-image-edit-plus"].some((name) => model.includes(name)) ? 6 : 1;
-    const isLegacyEdit = (model === "qwen-image-edit" || model.startsWith("qwen-image-edit-")) && !model.includes("qwen-image-edit-max") && !model.includes("qwen-image-edit-plus");
+    const isLegacyEdit = isLegacyQwenEditModel(model);
     const batches: number[] = [];
     for (let remaining = count; remaining > 0; remaining -= maxBatchSize) batches.push(Math.min(maxBatchSize, remaining));
     const images: ImageGenerationOutput[] = [];
@@ -908,10 +1065,7 @@ async function requestQwenImages(config: AiConfig, prompt: string, references: R
 
 function parseQwenImagePayload(payload: QwenImagePayload, headers?: unknown) {
     if (payload.code) throw new Error(payload.message || payload.code);
-    const urls = [
-        ...(payload.output?.choices || []).flatMap((choice) => choice.message?.content || []).map((item) => item.image),
-        ...(payload.output?.results || []).map((item) => item.url),
-    ].filter((url): url is string => Boolean(url));
+    const urls = [...(payload.output?.choices || []).flatMap((choice) => choice.message?.content || []).map((item) => item.image), ...(payload.output?.results || []).map((item) => item.url)].filter((url): url is string => Boolean(url));
     if (!urls.length) throw new ImageGenerationError("Qwen 接口没有返回图片", { failureStage: "response_parse", kind: "response_parse" });
     const metadata: ImageProviderMetadata = {
         providerTaskId: payload.output?.task_id,
@@ -924,12 +1078,12 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const selectedModel = config.model || config.imageModel;
     assertModelChannelAvailable(config, selectedModel);
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
+    const requestParameters = resolveImageRequestParameters(config);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const responseFormat = requestedImageResponseFormat(config, selectedModel);
     const script = resolveModelScript(config, selectedModel, "image");
     if (script) {
         const quality = normalizeQuality(config.quality);
-        const requestSize = resolveRequestSize(quality, config.size);
         const background = normalizeBackground(config.background);
         try {
             const result = await retryImageRequest(
@@ -940,7 +1094,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                         config: requestConfig,
                         prompt: withSystemPrompt(requestConfig, prompt),
                         images: [],
-                        params: { size: requestSize, quality, count: n, responseFormat, ...(background ? { background } : {}) },
+                        params: { size: requestParameters.resolvedSize, quality, count: n, responseFormat, ...(background ? { background } : {}) },
                         signal: options?.signal,
                     }),
                 { signal: options?.signal },
@@ -952,22 +1106,19 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     }
     if (requestConfig.apiFormat === "gemini") {
         try {
-            return await requestGeminiImages(requestConfig, prompt, [], n, options);
+            return await requestGeminiImages(requestConfig, prompt, [], n, requestParameters, options);
         } catch (error) {
             throw classifyImageGenerationError(error);
         }
     }
     if (requestConfig.apiFormat === "qwen") {
-        const quality = normalizeQuality(config.quality);
-        const requestSize = resolveQwenRequestSize(requestConfig.model, quality, config.size);
         try {
-            return await requestQwenImages(requestConfig, prompt, [], n, requestSize, options);
+            return await requestQwenImages(requestConfig, prompt, [], n, requestParameters.resolvedSize, options);
         } catch (error) {
             throw classifyImageGenerationError(error);
         }
     }
     const quality = normalizeQuality(config.quality);
-    const requestSize = resolveRequestSize(quality, config.size);
     const background = normalizeBackground(config.background);
     try {
         const response = await retryImageRequest(
@@ -979,7 +1130,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                         prompt: withSystemPrompt(requestConfig, prompt),
                         n,
                         ...(quality ? { quality } : {}),
-                        ...(requestSize ? { size: requestSize } : {}),
+                        ...(requestParameters.resolvedSize ? { size: requestParameters.resolvedSize } : {}),
                         ...(background ? { background } : {}),
                         ...(responseFormat ? { response_format: responseFormat } : {}),
                         output_format: IMAGE_OUTPUT_FORMAT,
@@ -1002,13 +1153,13 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const selectedModel = config.model || config.imageModel;
     assertModelChannelAvailable(config, selectedModel);
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
+    const requestParameters = resolveImageRequestParameters(config);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
     const responseFormat = requestedImageResponseFormat(config, selectedModel);
     const script = resolveModelScript(config, selectedModel, "image");
     if (script) {
         const quality = normalizeQuality(config.quality);
-        const requestSize = resolveRequestSize(quality, config.size);
         const background = normalizeBackground(config.background);
         const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
         const maskDataUrl = mask ? await imageToDataUrl(mask) : undefined;
@@ -1022,7 +1173,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
                         prompt: withSystemPrompt(requestConfig, requestPrompt),
                         images: refs,
                         mask: maskDataUrl,
-                        params: { size: requestSize, quality, count: n, responseFormat, ...(background ? { background } : {}) },
+                        params: { size: requestParameters.resolvedSize, quality, count: n, responseFormat, ...(background ? { background } : {}) },
                         signal: options?.signal,
                     }),
                 { signal: options?.signal },
@@ -1035,23 +1186,20 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (requestConfig.apiFormat === "gemini") {
         if (mask) throw new Error("Gemini 调用格式暂不支持蒙版编辑");
         try {
-            return await requestGeminiImages(requestConfig, requestPrompt, references, n, options);
+            return await requestGeminiImages(requestConfig, requestPrompt, references, n, requestParameters, options);
         } catch (error) {
             throw classifyImageGenerationError(error);
         }
     }
     if (requestConfig.apiFormat === "qwen") {
         if (mask) throw new Error("Qwen 调用格式暂不支持蒙版编辑");
-        const quality = normalizeQuality(config.quality);
-        const requestSize = resolveQwenRequestSize(requestConfig.model, quality, config.size);
         try {
-            return await requestQwenImages(requestConfig, requestPrompt, references, n, requestSize, options);
+            return await requestQwenImages(requestConfig, requestPrompt, references, n, requestParameters.resolvedSize, options);
         } catch (error) {
             throw classifyImageGenerationError(error);
         }
     }
     const quality = normalizeQuality(config.quality);
-    const requestSize = resolveRequestSize(quality, config.size);
     const background = normalizeBackground(config.background);
     const formData = new FormData();
     formData.set("model", requestConfig.model);
@@ -1062,8 +1210,8 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (quality) {
         formData.set("quality", quality);
     }
-    if (requestSize) {
-        formData.set("size", requestSize);
+    if (requestParameters.resolvedSize) {
+        formData.set("size", requestParameters.resolvedSize);
     }
     if (background) {
         formData.set("background", background);
@@ -1108,10 +1256,18 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
             if (answer === "没有返回内容") onDelta(answer);
             return answer;
         }
-        const answer = (await requestStreamingResponse(requestConfig, {
-            model: requestConfig.model,
-            input: toResponseInput(withSystemMessage(requestConfig, messages)),
-        }, onDelta, options)).content || "没有返回内容";
+        const answer =
+            (
+                await requestStreamingResponse(
+                    requestConfig,
+                    {
+                        model: requestConfig.model,
+                        input: toResponseInput(withSystemMessage(requestConfig, messages)),
+                    },
+                    onDelta,
+                    options,
+                )
+            ).content || "没有返回内容";
         if (answer === "没有返回内容") onDelta(answer);
         return answer;
     } catch (error) {

@@ -17,3 +17,42 @@ General Public License v3.0. See LICENSE for the complete license text.
 This notice records the upstream source and current maintenance of the
 modified version. It does not claim that all code in this repository was
 created from scratch or that upstream copyrights were transferred.
+
+Image design rule source
+------------------------
+
+The browser-side image design registries, recommendation rules, workflow
+ideas, and prompt compilation guidance include adaptations of:
+
+  Baoyu Skills
+  https://github.com/JimLiu/baoyu-skills
+  Reference commit: 6b7a2e417500561a5ecdd0b168332f4142584617
+
+Those adapted portions are used under the MIT License. They were translated
+into local TypeScript data and browser workflows; the original Agent runtime,
+scripts, and file-system mechanisms are not included.
+
+MIT License
+
+Copyright (c) 2026 Jim Liu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The Luffy Canvas repository as a whole remains distributed under the GNU
+Affero General Public License v3.0. See LICENSE.
