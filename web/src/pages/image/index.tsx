@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Copy, Download, ExternalLink, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, Save, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Copy, Download, ExternalLink, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, Save, SlidersHorizontal, Sparkles, Trash2, Upload, WandSparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Tag, Tooltip, Typography } from "antd";
 import localforage from "localforage";
@@ -6,6 +6,7 @@ import { saveAs } from "file-saver";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
 import { ModelPicker } from "@/components/model-picker";
+import { ImagePromptOptimizerDialog } from "@/components/prompts/image-prompt-optimizer";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -16,6 +17,7 @@ import { nanoid } from "nanoid";
 import { formatBytes, formatDuration, getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { requestImageBatch } from "@/services/api/image-batch";
 import { IMAGE_REQUEST_UNKNOWN_MESSAGE, ImageGenerationError } from "@/services/api/image-errors";
+import { consumeImagePrompt } from "@/services/prompt-optimizer-transfer";
 import { deleteStoredImages, downloadImageBlob, resolveImageUrl, storeImageBlob, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
@@ -94,6 +96,7 @@ export default function ImagePage() {
     const [logsOpen, setLogsOpen] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [promptDialogOpen, setPromptDialogOpen] = useState(false);
+    const [promptOptimizerOpen, setPromptOptimizerOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [startedAt, setStartedAt] = useState(0);
     const [elapsedMs, setElapsedMs] = useState(0);
@@ -126,6 +129,13 @@ export default function ImagePage() {
     useEffect(() => {
         void refreshLogs();
     }, []);
+
+    useEffect(() => {
+        const pendingPrompt = consumeImagePrompt();
+        if (!pendingPrompt) return;
+        setPrompt(pendingPrompt);
+        message.success("已将优化后的提示词带入生图工作台");
+    }, [message]);
 
     const addReferences = async (files?: FileList | null) => {
         const candidates = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
@@ -337,7 +347,12 @@ export default function ImagePage() {
                 message.warning("Qwen 最多支持 3 张、单张不超过 10MB 的 JPG/PNG/BMP/TIFF/WEBP/GIF 参考图");
                 return;
             }
-            setReferences((value) => [...value, { id: nanoid(), name: `result-${index + 1}.png`, type: stored.mimeType || "image/png", dataUrl: stored.dataUrl || "", storageKey: stored.storageKey, bytes: stored.bytes, width: stored.width, height: stored.height }].slice(0, referenceLimit));
+            setReferences((value) =>
+                [...value, { id: nanoid(), name: `result-${index + 1}.png`, type: stored.mimeType || "image/png", dataUrl: stored.dataUrl || "", storageKey: stored.storageKey, bytes: stored.bytes, width: stored.width, height: stored.height }].slice(
+                    0,
+                    referenceLimit,
+                ),
+            );
             message.success("已加入参考图");
         } catch (error) {
             message.error(imageErrorDetails(error, image.remoteUrl ? "result_download" : "indexeddb_write").message);
@@ -595,9 +610,12 @@ export default function ImagePage() {
                             <div>
                                 <div className="mb-2 flex items-center justify-between gap-3">
                                     <span className="text-base font-semibold">提示词</span>
-                                    <div className="flex gap-2">
+                                    <div className="flex flex-wrap justify-end gap-2">
                                         <Button size="small" icon={<BookOpen className="size-3.5" />} onClick={() => setPromptDialogOpen(true)}>
                                             查看提示词库
+                                        </Button>
+                                        <Button size="small" icon={<WandSparkles className="size-3.5" />} onClick={() => setPromptOptimizerOpen(true)}>
+                                            优化提示词
                                         </Button>
                                         <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => setAssetPickerOpen(true)}>
                                             查看我的资产
@@ -744,6 +762,16 @@ export default function ImagePage() {
                 </div>
             </Drawer>
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
+            <ImagePromptOptimizerDialog
+                open={promptOptimizerOpen}
+                initialPrompt={prompt}
+                onClose={() => setPromptOptimizerOpen(false)}
+                onApply={(value) => {
+                    setPrompt(value);
+                    setPromptOptimizerOpen(false);
+                    message.success("已应用优化后的提示词");
+                }}
+            />
             <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
             <Modal title="删除生成记录" open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
                 确定删除选中的 {selectedLogIds.length} 条生成记录吗？
@@ -798,7 +826,11 @@ function ResultImageCard({
             <div className="space-y-2 border-t border-stone-200 px-3 py-2.5 dark:border-stone-800">
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
                     <Tag className="m-0">{imageStatusLabel(status)}</Tag>
-                    {image.width && image.height ? <span>{image.width}x{image.height}</span> : null}
+                    {image.width && image.height ? (
+                        <span>
+                            {image.width}x{image.height}
+                        </span>
+                    ) : null}
                     {image.bytes ? <span>{formatBytes(image.bytes)}</span> : null}
                     <span>{formatDuration(image.durationMs)}</span>
                 </div>
@@ -823,14 +855,7 @@ function ResultImageCard({
                             </Button>
                         </Tooltip>
                         <Tooltip title={stored ? "已保存到浏览器本地" : "下载远程图片并保存到浏览器本地"}>
-                            <Button
-                                className={RESULT_ACTION_BUTTON_CLASS}
-                                size="small"
-                                icon={<Save className="size-3.5" />}
-                                loading={status === "downloading"}
-                                disabled={stored || actionsDisabled}
-                                onClick={() => void onSaveLocal(image, index)}
-                            >
+                            <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<Save className="size-3.5" />} loading={status === "downloading"} disabled={stored || actionsDisabled} onClick={() => void onSaveLocal(image, index)}>
                                 {stored ? "已保存" : "保存到本地"}
                             </Button>
                         </Tooltip>

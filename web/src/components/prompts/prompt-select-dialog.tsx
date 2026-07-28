@@ -5,6 +5,7 @@ import { App, Empty, Input, Modal, Spin, Tag } from "antd";
 import { ALL_PROMPTS_OPTION } from "@/services/api/prompts";
 import { cn } from "@/lib/utils";
 import { PromptCard } from "./prompt-card";
+import { PromptGardenLinks } from "./prompt-garden-links";
 import { usePromptList } from "./use-prompt-list";
 
 export function PromptSelectDialog({ open, onOpenChange, onSelect }: { open: boolean; onOpenChange: (open: boolean) => void; onSelect: (prompt: string) => void }) {
@@ -34,7 +35,8 @@ export function PromptSelectDialog({ open, onOpenChange, onSelect }: { open: boo
     return (
         <Modal title="提示词库" open={open} onCancel={() => onOpenChange(false)} footer={null} width={1040} centered>
             <div data-canvas-no-zoom onWheelCapture={(event) => event.stopPropagation()}>
-                <div className="mx-auto max-w-2xl">
+                <PromptGardenLinks compact />
+                <div className="mx-auto mt-4 max-w-2xl">
                     <Input size="large" prefix={<Search className="size-4 text-stone-400" />} value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="按标题查询" />
                 </div>
                 <div className="mt-5 grid gap-3">
