@@ -4,6 +4,7 @@
 
 - [快速开始](/docs/overview/quick-start)
 - [功能介绍](/docs/overview/features)
+- [生图工作台设计系统](/docs/overview/image-design-workbench)
 - [Netlify 部署](/docs/overview/netlify)
 - [Render 部署](/docs/overview/render)
 - [Docker 部署](/docs/overview/docker)

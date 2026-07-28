@@ -57,6 +57,8 @@ export type AiConfig = {
     models: string[];
     quality: string;
     size: string;
+    /** Runtime-only resolved image ratio used when a provider encodes size and ratio separately. */
+    imageAspectRatio?: string;
     background: string;
     count: string;
     canvasImageCount: string;
@@ -484,7 +486,19 @@ export function resolveModelChannel(config: AiConfig, value: string) {
     if (decoded && !matched) {
         return createModelChannel({ id: decoded.channelId, name: "已删除渠道", provider: "custom", baseUrl: "", apiKey: "", authType: "none", apiFormat: "openai", models: [{ name: model, capabilities: guessCapabilities(model) }] });
     }
-    return matched || config.channels[0] || createModelChannel({ id: "default", name: "默认渠道", baseUrl: config.baseUrl, apiKey: config.apiKey, authType: config.authType, apiFormat: config.apiFormat, models: config.models.map(modelOptionName).map((name) => ({ name, capabilities: guessCapabilities(name) })) });
+    return (
+        matched ||
+        config.channels[0] ||
+        createModelChannel({
+            id: "default",
+            name: "默认渠道",
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            authType: config.authType,
+            apiFormat: config.apiFormat,
+            models: config.models.map(modelOptionName).map((name) => ({ name, capabilities: guessCapabilities(name) })),
+        })
+    );
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {

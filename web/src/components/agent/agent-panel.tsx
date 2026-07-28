@@ -51,20 +51,38 @@ export function AgentPanel() {
 
     return (
         <motion.div
-            className="relative z-[70] flex h-full shrink-0"
+            className="fixed inset-y-0 right-0 z-[70] flex h-full shrink-0 sm:relative sm:inset-auto"
             initial={{ width: 0, opacity: 0 }}
-            animate={{ width: panelOpen ? width + 1 : 0, opacity: panelOpen ? 1 : 0 }}
+            animate={{ width: panelOpen ? `min(100vw, ${width + 1}px)` : 0, opacity: panelOpen ? 1 : 0 }}
             transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
             style={{ overflow: "clip", pointerEvents: panelClosing ? "none" : undefined }}
         >
             <motion.aside
+                id="global-agent-panel"
                 className="relative flex h-full shrink-0 flex-col border-l"
                 initial={{ x: 48 }}
                 animate={{ x: panelClosing ? 28 : 0 }}
                 transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
-                style={{ width, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
+                style={{ width: `min(100vw, ${width}px)`, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
             >
-                <button type="button" className="absolute inset-y-0 left-0 z-40 w-4 -translate-x-1/2 cursor-col-resize" onPointerDown={startResize} aria-label="调整右侧面板宽度" />
+                <button
+                    type="button"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-valuemin={360}
+                    aria-valuemax={760}
+                    aria-valuenow={width}
+                    className="absolute inset-y-0 left-0 z-40 hidden w-4 -translate-x-1/2 cursor-col-resize sm:block"
+                    onPointerDown={startResize}
+                    onKeyDown={(event) => {
+                        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                        event.preventDefault();
+                        const nextWidth = Math.min(760, Math.max(360, width + (event.key === "ArrowLeft" ? 20 : -20)));
+                        setAgentState({ width: nextWidth });
+                        localStorage.setItem("canvas-agent-panel-width", String(nextWidth));
+                    }}
+                    aria-label="调整右侧面板宽度"
+                />
                 <header className="flex h-14 shrink-0 items-center justify-between border-b px-4" style={{ borderColor: theme.node.stroke }}>
                     <div className="flex min-w-0 items-center gap-2">
                         <span className="grid size-8 place-items-center rounded-lg">
@@ -80,6 +98,7 @@ export function AgentPanel() {
                     <div className="flex shrink-0 items-center gap-2">
                         <Tooltip title="网页侧审批独立于 MCP 客户端审批">
                             <Select
+                                aria-label="Agent 操作审批模式"
                                 size="small"
                                 value={approvalMode}
                                 className="w-40"
@@ -88,7 +107,7 @@ export function AgentPanel() {
                             />
                         </Tooltip>
                         <Tooltip title="收起对话">
-                            <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" style={{ color: theme.node.muted }} icon={<PanelRightClose className="size-4" />} onClick={closePanel} />
+                            <Button aria-label="收起 Agent 面板" type="text" shape="circle" className="!h-8 !w-8 !min-w-8" style={{ color: theme.node.muted }} icon={<PanelRightClose className="size-4" />} onClick={closePanel} />
                         </Tooltip>
                     </div>
                 </header>

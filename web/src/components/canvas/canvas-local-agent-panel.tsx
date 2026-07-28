@@ -871,7 +871,7 @@ export function CanvasLocalAgentPanel({ embedded, headless, autoConnect }: { emb
                 }}
                 right={
                     <>
-                        <Select size="small" value={provider} className="min-w-28" options={providerOptions} disabled={sending || waiting} onChange={(value) => void changeProvider(value)} />
+                        <Select aria-label="Agent 提供方" size="small" value={provider} className="min-w-28" options={providerOptions} disabled={sending || waiting} onChange={(value) => void changeProvider(value)} />
                         <Button size="small" type="text" disabled={!connected || loadingThreads || sending || waiting} icon={<Plus className="size-3.5" />} onClick={startNewThread}>
                             新对话
                         </Button>
@@ -1115,7 +1115,7 @@ function AgentConnectView({
                         </span>
                         <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-[11px] leading-5">{command}</code>
                         <Tooltip title="复制命令">
-                            <Button size="small" type="text" className="!h-6 !w-6 !min-w-6" icon={<Copy className="size-3.5" />} onClick={() => copyCommand(command)} />
+                            <Button aria-label={`复制${label}命令`} size="small" type="text" className="!h-6 !w-6 !min-w-6" icon={<Copy className="size-3.5" />} onClick={() => copyCommand(command)} />
                         </Tooltip>
                     </div>
                 ))}
@@ -1147,7 +1147,7 @@ function AgentConnectView({
                                         <div className="mt-2 flex items-center gap-2 rounded-md border bg-transparent px-2 py-1.5" style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
                                             <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-[11px] leading-5">{command}</code>
                                             <Tooltip title="复制命令">
-                                                <Button size="small" type="text" className="!h-6 !w-6 !min-w-6" icon={<Copy className="size-3.5" />} onClick={() => copyCommand(command)} />
+                                                <Button aria-label="复制 Agent 启动命令" size="small" type="text" className="!h-6 !w-6 !min-w-6" icon={<Copy className="size-3.5" />} onClick={() => copyCommand(command)} />
                                             </Tooltip>
                                         </div>
                                     ) : null}

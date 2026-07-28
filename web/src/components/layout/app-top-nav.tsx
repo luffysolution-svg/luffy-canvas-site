@@ -33,7 +33,7 @@ export function AppTopNav() {
     return (
         <>
             {!hideHeader ? (
-                <header className="sticky top-0 z-20 h-14 shrink-0 border-b border-stone-200 bg-background/90 backdrop-blur-xl dark:border-stone-800">
+                <header className="@container/top-nav sticky top-0 z-20 h-14 shrink-0 border-b border-stone-200 bg-background/90 backdrop-blur-xl dark:border-stone-800">
                     <div className="mx-auto flex h-full max-w-7xl items-stretch justify-between gap-3 px-3 sm:gap-5 sm:px-6">
                         <div className="flex min-w-0 items-center">
                             <Link to="/" className="flex h-full shrink-0 items-center gap-2 text-sm font-semibold leading-none tracking-tight text-stone-950 transition hover:text-stone-600 dark:text-stone-100 dark:hover:text-stone-300">
@@ -49,7 +49,7 @@ export function AppTopNav() {
 
                             <button
                                 type="button"
-                                className="ml-2 inline-flex size-8 shrink-0 items-center justify-center text-stone-600 transition hover:text-stone-950 sm:ml-3 lg:hidden dark:text-stone-300 dark:hover:text-white"
+                                className="ml-2 inline-flex size-10 shrink-0 items-center justify-center text-stone-600 transition hover:text-stone-950 sm:ml-3 @min-[1000px]/top-nav:hidden dark:text-stone-300 dark:hover:text-white"
                                 onClick={() => setMobileNavOpen(true)}
                                 aria-label="打开导航菜单"
                                 title="导航菜单"
@@ -57,7 +57,7 @@ export function AppTopNav() {
                                 <Menu className="size-5" />
                             </button>
 
-                            <nav className="hide-scrollbar ml-6 hidden h-14 min-w-0 items-center gap-5 overflow-x-auto lg:flex xl:ml-8 xl:gap-7">
+                            <nav className="hide-scrollbar ml-6 hidden h-14 min-w-0 items-center gap-5 overflow-x-auto @min-[1000px]/top-nav:flex xl:ml-8 xl:gap-7">
                                 {navigationTools.map((tool) => {
                                     const Icon = tool.icon;
                                     const active = tool.slug === activeToolSlug;
@@ -82,7 +82,16 @@ export function AppTopNav() {
 
                         <div className="my-auto flex h-9 min-w-0 items-center justify-end gap-1 justify-self-end whitespace-nowrap sm:gap-2">
                             <Tooltip title={panelOpen ? "收起 Agent" : "打开 Agent"}>
-                                <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" icon={<Bot className="size-4" />} onClick={togglePanel} aria-label="打开 Agent" />
+                                <Button
+                                    type="text"
+                                    shape="circle"
+                                    className="!h-10 !w-10 !min-w-10 @min-[1000px]/top-nav:!h-8 @min-[1000px]/top-nav:!w-8 @min-[1000px]/top-nav:!min-w-8"
+                                    icon={<Bot className="size-4" />}
+                                    onClick={togglePanel}
+                                    aria-label={panelOpen ? "收起 Agent" : "打开 Agent"}
+                                    aria-expanded={panelOpen}
+                                    aria-controls="global-agent-panel"
+                                />
                             </Tooltip>
                             <UserStatusActions />
                         </div>

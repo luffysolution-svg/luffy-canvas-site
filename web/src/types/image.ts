@@ -1,3 +1,5 @@
+export type ImageReferenceRole = "direct" | "subject" | "identity" | "style" | "palette" | "composition" | "layout" | "product" | "character" | "series-anchor";
+
 export type ReferenceImage = {
     id: string;
     name: string;
@@ -8,9 +10,12 @@ export type ReferenceImage = {
     bytes?: number;
     width?: number;
     height?: number;
+    role?: ImageReferenceRole;
+    source?: "user" | "asset" | "result" | "series-anchor";
+    summary?: string;
 };
 
-export type ImageGenerationStatus = "queued" | "generating" | "generated" | "downloading" | "stored" | "remote_only" | "unknown" | "failed";
+export type ImageGenerationStatus = "queued" | "generating" | "generated" | "downloading" | "stored" | "remote_only" | "unknown" | "failed" | "cancelled";
 
 export type ImageFailureStage = "request_prepare" | "provider_submit" | "provider_processing" | "response_parse" | "result_download" | "indexeddb_write" | "project_persist";
 
