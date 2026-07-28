@@ -87,21 +87,8 @@ export const useAssetStore = create<AssetStore>()(
             replaceAssets: (assets) => set({ assets }),
             cleanupImages: (extra) => {
                 window.setTimeout(async () => {
-                    const [{ useCanvasStore }, { useCanvasTransferStore }, { useCreationStore }] = await Promise.all([
-                        import("@/stores/canvas/use-canvas-store"),
-                        import("@/stores/canvas/use-canvas-transfer-store"),
-                        import("@/stores/use-creation-store"),
-                    ]);
-                    const creationState = useCreationStore.getState();
-                    const transferState = useCanvasTransferStore.getState();
-                    if (creationState.hydrated && transferState.hydrated)
-                        await cleanupUnusedImages({
-                            assets: get().assets,
-                            projects: useCanvasStore.getState().projects,
-                            creationProjects: creationState.projects,
-                            canvasTransfers: transferState.commands.filter((command) => command.status === "queued" || command.status === "consuming"),
-                            extra,
-                        });
+                    const { useCanvasStore } = await import("@/stores/canvas/use-canvas-store");
+                    await cleanupUnusedImages({ assets: get().assets, projects: useCanvasStore.getState().projects, extra });
                     await cleanupUnusedMedia({ assets: get().assets, projects: useCanvasStore.getState().projects, extra });
                 }, 0);
             },

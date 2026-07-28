@@ -10,7 +10,7 @@ import { ImageGenerationError } from "@/services/api/image-errors";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
 import { defaultConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
-import { downloadImageBlob, resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { downloadImageBlob, uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
 import { nanoid } from "nanoid";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
@@ -41,15 +41,12 @@ import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/a
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { useAgentStore } from "@/stores/use-agent-store";
-import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
-import { selectPendingCanvasTransfer, useCanvasTransferStore } from "@/stores/canvas/use-canvas-transfer-store";
+import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
-import { createPersistedImageNode } from "@/lib/canvas/canvas-image-node";
-import { canvasTransferPlacementCenter } from "@/lib/canvas/canvas-transfer-placement";
 import { findContainingGroupId, findGroupDropTarget, getConnectionTargetAnchor, isHiddenBatchChild, isHiddenBatchConnectionEndpoint, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import {
     audioExtension,
@@ -240,8 +237,6 @@ function InfiniteCanvasPage() {
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const projectId = params.id || "";
-    const projectIdRef = useRef(projectId);
-    projectIdRef.current = projectId;
     const localAgentConnected = useAgentStore((state) => state.connected);
     const localAgentActivity = useAgentStore((state) => state.activity);
     const localAgentEnabled = useAgentStore((state) => state.enabled);
@@ -288,12 +283,6 @@ function InfiniteCanvasPage() {
     const renameProject = useCanvasStore((state) => state.renameProject);
     const deleteProjects = useCanvasStore((state) => state.deleteProjects);
     const currentProject = useCanvasStore((state) => state.projects.find((project) => project.id === projectId));
-    const canvasTransferHydrated = useCanvasTransferStore((state) => state.hydrated);
-    const pendingCanvasTransferId = useCanvasTransferStore((state) => selectPendingCanvasTransfer(state.commands, projectId)?.id);
-    const consumeCanvasTransfer = useCanvasTransferStore((state) => state.consume);
-    const releaseCanvasTransfer = useCanvasTransferStore((state) => state.release);
-    const completeCanvasTransfer = useCanvasTransferStore((state) => state.complete);
-    const failCanvasTransfer = useCanvasTransferStore((state) => state.fail);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [nodes, setNodes] = useState<CanvasNodeData[]>([]);
     const [connections, setConnections] = useState<CanvasConnection[]>([]);
@@ -2939,109 +2928,6 @@ function InfiniteCanvasPage() {
         },
         [screenToCanvas, size.height, size.width],
     );
-
-    useEffect(() => {
-        if (!projectLoaded || !canvasTransferHydrated || !pendingCanvasTransferId) return;
-        const command = consumeCanvasTransfer(projectId);
-        if (!command) return;
-
-        const markCreationInserted = async () => {
-            try {
-                const { flushCreationStorePersistence, useCreationStore } = await import("@/stores/use-creation-store");
-                if (!useCreationStore.getState().hydrated) {
-                    await new Promise<void>((resolve) => {
-                        let unsubscribe = () => {};
-                        const finish = () => {
-                            unsubscribe();
-                            resolve();
-                        };
-                        unsubscribe = useCreationStore.persist.onFinishHydration(finish);
-                        if (useCreationStore.persist.hasHydrated()) finish();
-                    });
-                }
-                if (!useCreationStore.getState().hydrated) throw new Error("创作记录尚未加载完成");
-                const imageId = command.creationSource.generatedImageId;
-                if (!imageId) throw new Error("插入命令缺少候选图片记录");
-                useCreationStore.getState().markCanvasInserted(command.creationProjectId, command.projectId, command.nodeId, imageId);
-                await flushCreationStorePersistence();
-            } catch {
-                message.warning("图片已插入画布，但创作记录未能同步更新");
-            }
-        };
-
-        let disposed = false;
-        const insert = async () => {
-            try {
-                const existing = nodesRef.current.find((node) => node.id === command.nodeId);
-                if (existing) {
-                    if (existing.type !== CanvasNodeType.Image || existing.metadata?.storageKey !== command.storageKey) throw new Error("待插入图片的节点编号已被占用，请返回审核台重新插入");
-                    setSelectedNodeIds(new Set([existing.id]));
-                    setSelectedConnectionId(null);
-                    setDialogNodeId(existing.id);
-                    updateProject(command.projectId, { nodes: nodesRef.current });
-                    await flushCanvasStorePersistence();
-                    if (disposed) return;
-                    await markCreationInserted();
-                    if (disposed) return;
-                    completeCanvasTransfer(command.id);
-                    return;
-                }
-
-                const url = await resolveImageUrl(command.storageKey, "");
-                if (disposed) return;
-                if (!url) throw new Error("创作图片的本地文件不存在，请返回审核台重新插入");
-                const meta = command.width && command.height ? { width: command.width, height: command.height, mimeType: command.mimeType } : await readImageMeta(url);
-                if (disposed) return;
-                if (projectIdRef.current !== command.projectId) throw new Error("目标画布已切换，请返回审核台重新插入");
-
-                const canvasCenter = getCanvasCenter();
-                const centeredNode = createPersistedImageNode(
-                    {
-                        nodeId: command.nodeId,
-                        title: command.title,
-                        url,
-                        storageKey: command.storageKey,
-                        width: meta.width,
-                        height: meta.height,
-                        bytes: command.bytes,
-                        mimeType: command.mimeType || meta.mimeType,
-                        prompt: command.prompt,
-                        remoteUrl: command.remoteUrl,
-                        creationSource: command.creationSource,
-                    },
-                    canvasCenter,
-                );
-                const placementCenter = command.batchId ? canvasTransferPlacementCenter(canvasCenter, centeredNode.width, command.batchIndex, command.batchSize) : canvasCenter;
-                const node = {
-                    ...centeredNode,
-                    position: { x: placementCenter.x - centeredNode.width / 2, y: placementCenter.y - centeredNode.height / 2 },
-                };
-                const nextNodes = [...nodesRef.current, node];
-                nodesRef.current = nextNodes;
-                setNodes(nextNodes);
-                setSelectedNodeIds(new Set([node.id]));
-                setSelectedConnectionId(null);
-                setDialogNodeId(node.id);
-                updateProject(command.projectId, { nodes: nextNodes });
-                await flushCanvasStorePersistence();
-                if (disposed) return;
-                await markCreationInserted();
-                if (disposed) return;
-                completeCanvasTransfer(command.id);
-                message.success("图片已插入画布");
-            } catch (error) {
-                const errorMessage = error instanceof Error ? error.message : "图片插入画布失败";
-                failCanvasTransfer(command.id, errorMessage);
-                message.error(errorMessage);
-            }
-        };
-
-        void insert();
-        return () => {
-            disposed = true;
-            releaseCanvasTransfer(command.id);
-        };
-    }, [canvasTransferHydrated, completeCanvasTransfer, consumeCanvasTransfer, failCanvasTransfer, getCanvasCenter, message, pendingCanvasTransferId, projectId, projectLoaded, releaseCanvasTransfer, updateProject]);
 
     const insertAssistantText = useCallback(
         (text: string, title?: string) => {

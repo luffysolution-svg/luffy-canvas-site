@@ -27,32 +27,6 @@ export type CanvasNodeStatus = "idle" | "success" | "loading" | "error" | "unkno
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
 
-export type CanvasCreationSource = {
-    creationProjectId: string;
-    generatedImageId?: string;
-    candidateId?: string;
-    cardDeckId?: string;
-    cardPageId?: string;
-    pageIndex?: number;
-    styleId?: string;
-    sourceImageId?: string;
-    promptVersionId?: string;
-    providerId?: string;
-    modelId?: string;
-    modelConfigId?: string;
-    createdAt?: string;
-    reviewStatus?: string;
-    mode?: "social" | "research";
-    conceptDraft?: boolean;
-    platformPresetId?: string;
-    targetWidth?: number;
-    targetHeight?: number;
-    aspectRatio?: string;
-    size?: string;
-    quality?: string;
-    background?: string;
-};
-
 export type CanvasNodeMetadata = {
     content?: string;
     composerContent?: string;
@@ -101,7 +75,6 @@ export type CanvasNodeMetadata = {
     durationMs?: number;
     groupId?: string;
     interactive?: boolean; // 插件节点「交互 ⇄ 移动」开关状态(见 CanvasNodeDefinition.interactionToggle)
-    creationSource?: CanvasCreationSource;
 };
 
 export type CanvasNodeData = {

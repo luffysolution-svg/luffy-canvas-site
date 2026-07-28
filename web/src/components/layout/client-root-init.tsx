@@ -77,13 +77,11 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     return <>{children}</>;
 }
 
-export function normalizeImportedProvider(value: string, baseUrl: string): ChannelProvider {
+function normalizeImportedProvider(value: string, baseUrl: string): ChannelProvider {
     const provider = value.trim().toLowerCase().replace(/_/g, "-");
     if (provider === "newapi" || provider === "new-api") return "new-api";
-    if (provider === "openai" || provider === "openrouter" || provider === "seedream" || provider === "gemini" || provider === "qwen" || provider === "custom" || provider === "openai-compatible") return provider;
+    if (provider === "openai" || provider === "gemini" || provider === "qwen" || provider === "custom" || provider === "openai-compatible") return provider;
     const url = baseUrl.toLowerCase();
-    if (url.includes("openrouter.ai")) return "openrouter";
-    if (url.includes("volces.com") || url.includes("volcengineapi.com")) return "seedream";
     if (url.includes("generativelanguage.googleapis.com")) return "gemini";
     if (url.includes("dashscope") || url.includes("maas.aliyuncs.com")) return "qwen";
     if (url.includes("api.openai.com")) return "openai";
