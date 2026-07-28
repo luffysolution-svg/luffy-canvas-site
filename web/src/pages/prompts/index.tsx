@@ -3,6 +3,7 @@ import { type ReactNode, type UIEvent, useEffect, useMemo, useState } from "reac
 import { App, Button, Empty, Input, Popconfirm, Space, Spin, Tabs, Tag, Tooltip } from "antd";
 
 import { PromptCard } from "@/components/prompts/prompt-card";
+import { PromptGardenLinks } from "@/components/prompts/prompt-garden-links";
 import { usePromptList } from "@/components/prompts/use-prompt-list";
 import { MyPromptEditorDialog } from "./components/my-prompt-editor-dialog";
 import { PromptDetailDialog } from "./components/prompt-detail-dialog";
@@ -94,7 +95,12 @@ export default function PromptsPage() {
                         ) : null}
                     </div>
                     <Tabs className="mt-5" activeKey={activeTab} onChange={setActiveTab} items={[{ key: "library", label: "提示词库" }, { key: "personal", label: `我的提示词 (${personalPrompts.length})` }]} />
-                    <div className="mx-auto mt-2 w-full max-w-2xl">
+                    {activeTab === "library" ? (
+                        <div className="mx-auto mt-2 max-w-6xl">
+                            <PromptGardenLinks />
+                        </div>
+                    ) : null}
+                    <div className="mx-auto mt-5 w-full max-w-2xl">
                         <Input size="large" prefix={<Search className="size-4 text-stone-400" />} value={titleKeyword} placeholder="搜索标题、内容或标签" onChange={(event) => setTitleKeyword(event.target.value)} />
                     </div>
                     {activeTab === "library" ? (
